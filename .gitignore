@@ -1,5 +1,5 @@
 # Data files - NEVER push to GitHub
-*.db
+#*.db
 *.sqlite
 *.sqlite3
 displayintel.db
