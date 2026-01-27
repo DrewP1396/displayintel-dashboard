@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme
+from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_currency, format_with_commas, format_percent
 from utils.database import DatabaseManager
 from utils.exports import create_download_buttons
 
@@ -74,7 +74,9 @@ financials_df = DatabaseManager.get_financials(
     manufacturer=manufacturer
 )
 
+# Get theme colors
 theme = get_plotly_theme()
+colors = theme['color_discrete_sequence']
 
 # Main content
 if len(financials_df) > 0:
@@ -88,55 +90,47 @@ if len(financials_df) > 0:
 
         with col1:
             total_revenue = financials_df['revenue_m'].sum()
-            if total_revenue >= 1000:
-                rev_str = f"${total_revenue/1000:.1f}B"
-            else:
-                rev_str = f"${total_revenue:.0f}M"
-            st.metric("Total Revenue", rev_str)
+            st.metric("Total Revenue", format_currency(total_revenue))
 
         with col2:
             total_ebitda = financials_df['ebitda_m'].sum() if 'ebitda_m' in financials_df.columns else 0
-            if total_ebitda >= 1000:
-                ebitda_str = f"${total_ebitda/1000:.1f}B"
-            else:
-                ebitda_str = f"${total_ebitda:.0f}M"
-            st.metric("Total EBITDA", ebitda_str)
+            st.metric("Total EBITDA", format_currency(total_ebitda))
 
         with col3:
             avg_margin = financials_df['operating_margin_pct'].mean() if 'operating_margin_pct' in financials_df.columns else 0
-            st.metric("Avg Operating Margin", f"{avg_margin:.1f}%")
+            st.metric("Avg Operating Margin", format_percent(avg_margin))
 
         with col4:
             total_capex = financials_df['capex_m'].sum() if 'capex_m' in financials_df.columns else 0
-            if total_capex >= 1000:
-                capex_str = f"${total_capex/1000:.1f}B"
-            else:
-                capex_str = f"${total_capex:.0f}M"
-            st.metric("Total CapEx", capex_str)
+            st.metric("Total CapEx", format_currency(total_capex))
 
         st.divider()
 
         # Revenue over time
         st.markdown("#### Revenue Trends")
 
-        revenue_by_quarter = financials_df.groupby(['date', 'manufacturer'])['revenue_m'].sum().reset_index()
+        # Filter valid manufacturers
+        valid_mfr = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
+        revenue_by_quarter = valid_mfr.groupby(['date', 'manufacturer'])['revenue_m'].sum().reset_index()
 
-        fig = px.bar(
-            revenue_by_quarter,
-            x='date',
-            y='revenue_m',
-            color='manufacturer',
-            color_discrete_sequence=theme['color_discrete_sequence']
-        )
-        fig.update_layout(
-            **theme['layout'],
-            xaxis_title="Quarter",
-            yaxis_title="Revenue ($M)",
-            height=400,
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
-            barmode='stack'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if len(revenue_by_quarter) > 0:
+            fig = px.bar(
+                revenue_by_quarter,
+                x='date',
+                y='revenue_m',
+                color='manufacturer',
+                color_discrete_sequence=colors
+            )
+            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Quarter",
+                yaxis_title="Revenue ($M)",
+                height=400,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                barmode='stack'
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         # Revenue by manufacturer
         st.divider()
@@ -145,24 +139,24 @@ if len(financials_df) > 0:
         with col1:
             st.markdown("#### Revenue by Manufacturer")
 
-            mfr_revenue = financials_df.groupby('manufacturer')['revenue_m'].sum().sort_values(ascending=False)
+            mfr_revenue = valid_mfr.groupby('manufacturer')['revenue_m'].sum().sort_values(ascending=False)
 
-            fig = px.pie(
-                values=mfr_revenue.values,
-                names=mfr_revenue.index,
-                color_discrete_sequence=theme['color_discrete_sequence'],
-                hole=0.4
-            )
-            fig.update_layout(
-                **theme['layout'],
-                height=350
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if len(mfr_revenue) > 0:
+                fig = px.pie(
+                    values=mfr_revenue.values.tolist(),
+                    names=mfr_revenue.index.tolist(),
+                    color_discrete_sequence=colors,
+                    hole=0.4
+                )
+                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
+                apply_chart_theme(fig)
+                fig.update_layout(height=350)
+                st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.markdown("#### Revenue Rankings")
 
-            mfr_table = financials_df.groupby('manufacturer').agg({
+            mfr_table = valid_mfr.groupby('manufacturer').agg({
                 'revenue_m': 'sum',
                 'ebitda_m': 'sum',
                 'operating_margin_pct': 'mean'
@@ -176,9 +170,9 @@ if len(financials_df) > 0:
                 hide_index=True,
                 column_config={
                     "Manufacturer": st.column_config.TextColumn("Manufacturer", width="medium"),
-                    "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%.0f"),
-                    "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%.0f"),
-                    "Avg Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f")
+                    "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                    "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
+                    "Avg Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f%%")
                 }
             )
 
@@ -187,26 +181,29 @@ if len(financials_df) > 0:
         st.markdown("#### Operating Margin Trends")
 
         if 'operating_margin_pct' in financials_df.columns:
-            margin_trends = financials_df.groupby(['date', 'manufacturer'])['operating_margin_pct'].mean().reset_index()
+            valid_margins = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
+            margin_trends = valid_margins.groupby(['date', 'manufacturer'])['operating_margin_pct'].mean().reset_index()
 
-            fig = px.line(
-                margin_trends,
-                x='date',
-                y='operating_margin_pct',
-                color='manufacturer',
-                color_discrete_sequence=theme['color_discrete_sequence'],
-                markers=True
-            )
-            fig.update_layout(
-                **theme['layout'],
-                xaxis_title="Quarter",
-                yaxis_title="Operating Margin (%)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            # Add break-even line
-            fig.add_hline(y=0, line_dash="dash", line_color="#FF3B30", annotation_text="Break-even")
-            st.plotly_chart(fig, use_container_width=True)
+            if len(margin_trends) > 0:
+                fig = px.line(
+                    margin_trends,
+                    x='date',
+                    y='operating_margin_pct',
+                    color='manufacturer',
+                    color_discrete_sequence=colors,
+                    markers=True
+                )
+                fig.update_traces(hovertemplate='%{x}<br>%{y:.1f}%<extra></extra>')
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    xaxis_title="Quarter",
+                    yaxis_title="Operating Margin (%)",
+                    height=400,
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02)
+                )
+                # Add break-even line
+                fig.add_hline(y=0, line_dash="dash", line_color="#FF3B30", annotation_text="Break-even")
+                st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
 
@@ -216,49 +213,54 @@ if len(financials_df) > 0:
             st.markdown("#### EBITDA by Manufacturer")
 
             if 'ebitda_m' in financials_df.columns:
-                ebitda_by_mfr = financials_df.groupby('manufacturer')['ebitda_m'].sum().sort_values(ascending=True)
+                valid_ebitda = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
+                ebitda_by_mfr = valid_ebitda.groupby('manufacturer')['ebitda_m'].sum().sort_values(ascending=True)
 
-                fig = px.bar(
-                    x=ebitda_by_mfr.values,
-                    y=ebitda_by_mfr.index,
-                    orientation='h',
-                    color_discrete_sequence=theme['color_discrete_sequence']
-                )
-                fig.update_layout(
-                    **theme['layout'],
-                    showlegend=False,
-                    xaxis_title="EBITDA ($M)",
-                    yaxis_title="",
-                    height=400
-                )
-                fig.update_traces(marker_color=theme['color_discrete_sequence'][0])
-                st.plotly_chart(fig, use_container_width=True)
+                if len(ebitda_by_mfr) > 0:
+                    fig = px.bar(
+                        x=ebitda_by_mfr.values.tolist(),
+                        y=ebitda_by_mfr.index.tolist(),
+                        orientation='h'
+                    )
+                    fig.update_traces(marker_color=colors[0], hovertemplate='%{y}<br>$%{x:,.0f}M<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        showlegend=False,
+                        xaxis_title="EBITDA ($M)",
+                        yaxis_title="",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.markdown("#### Margin Distribution")
 
             if 'operating_margin_pct' in financials_df.columns:
-                fig = px.box(
-                    financials_df,
-                    x='manufacturer',
-                    y='operating_margin_pct',
-                    color='manufacturer',
-                    color_discrete_sequence=theme['color_discrete_sequence']
-                )
-                fig.update_layout(
-                    **theme['layout'],
-                    showlegend=False,
-                    xaxis_title="",
-                    yaxis_title="Operating Margin (%)",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                valid_box = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
+
+                if len(valid_box) > 0:
+                    fig = px.box(
+                        valid_box,
+                        x='manufacturer',
+                        y='operating_margin_pct',
+                        color='manufacturer',
+                        color_discrete_sequence=colors
+                    )
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        showlegend=False,
+                        xaxis_title="",
+                        yaxis_title="Operating Margin (%)",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
         # Profitability metrics table
         st.divider()
         st.markdown("#### Profitability Metrics by Company")
 
-        profit_metrics = financials_df.groupby('manufacturer').agg({
+        valid_profit = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
+        profit_metrics = valid_profit.groupby('manufacturer').agg({
             'revenue_m': ['sum', 'mean'],
             'ebitda_m': ['sum', 'mean'],
             'operating_margin_pct': ['mean', 'min', 'max']
@@ -276,13 +278,13 @@ if len(financials_df) > 0:
             hide_index=True,
             column_config={
                 "Manufacturer": st.column_config.TextColumn("Manufacturer"),
-                "Total Revenue": st.column_config.NumberColumn("Total Rev ($M)", format="$%.0f"),
-                "Avg Quarterly Revenue": st.column_config.NumberColumn("Avg Qtr Rev ($M)", format="$%.0f"),
-                "Total EBITDA": st.column_config.NumberColumn("Total EBITDA ($M)", format="$%.0f"),
-                "Avg Quarterly EBITDA": st.column_config.NumberColumn("Avg Qtr EBITDA ($M)", format="$%.0f"),
-                "Avg Margin": st.column_config.NumberColumn("Avg Margin (%)", format="%.1f"),
-                "Min Margin": st.column_config.NumberColumn("Min Margin (%)", format="%.1f"),
-                "Max Margin": st.column_config.NumberColumn("Max Margin (%)", format="%.1f")
+                "Total Revenue": st.column_config.NumberColumn("Total Rev ($M)", format="$%,.0f"),
+                "Avg Quarterly Revenue": st.column_config.NumberColumn("Avg Qtr Rev ($M)", format="$%,.0f"),
+                "Total EBITDA": st.column_config.NumberColumn("Total EBITDA ($M)", format="$%,.0f"),
+                "Avg Quarterly EBITDA": st.column_config.NumberColumn("Avg Qtr EBITDA ($M)", format="$%,.0f"),
+                "Avg Margin": st.column_config.NumberColumn("Avg Margin (%)", format="%.1f%%"),
+                "Min Margin": st.column_config.NumberColumn("Min Margin (%)", format="%.1f%%"),
+                "Max Margin": st.column_config.NumberColumn("Max Margin (%)", format="%.1f%%")
             }
         )
 
@@ -304,10 +306,10 @@ if len(financials_df) > 0:
             column_config={
                 "date": st.column_config.TextColumn("Date", width="small"),
                 "manufacturer": st.column_config.TextColumn("Manufacturer", width="medium"),
-                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%.0f"),
-                "ebitda_m": st.column_config.NumberColumn("EBITDA ($M)", format="$%.0f"),
-                "operating_margin_pct": st.column_config.NumberColumn("Margin (%)", format="%.1f"),
-                "capex_m": st.column_config.NumberColumn("CapEx ($M)", format="$%.0f")
+                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                "ebitda_m": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
+                "operating_margin_pct": st.column_config.NumberColumn("Margin (%)", format="%.1f%%"),
+                "capex_m": st.column_config.NumberColumn("CapEx ($M)", format="$%,.0f")
             }
         )
 
@@ -321,23 +323,25 @@ if len(financials_df) > 0:
 
             capex_trends = financials_df.groupby('date')['capex_m'].sum().reset_index()
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=capex_trends['date'],
-                y=capex_trends['capex_m'],
-                mode='lines+markers',
-                fill='tozeroy',
-                line=dict(color=theme['color_discrete_sequence'][0], width=2),
-                fillcolor='rgba(0, 122, 255, 0.1)'
-            ))
-            fig.update_layout(
-                **theme['layout'],
-                xaxis_title="Quarter",
-                yaxis_title="CapEx ($M)",
-                height=350,
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if len(capex_trends) > 0:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=capex_trends['date'].tolist(),
+                    y=capex_trends['capex_m'].tolist(),
+                    mode='lines+markers',
+                    fill='tozeroy',
+                    line=dict(color=colors[0], width=2),
+                    fillcolor='rgba(0, 122, 255, 0.1)',
+                    hovertemplate='%{x}<br>CapEx: $%{y:,.0f}M<extra></extra>'
+                ))
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    xaxis_title="Quarter",
+                    yaxis_title="CapEx ($M)",
+                    height=350,
+                    showlegend=False
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
 else:
     # Empty state - show placeholder content
@@ -415,8 +419,8 @@ else:
         hide_index=True,
         column_config={
             "Manufacturer": st.column_config.TextColumn("Manufacturer"),
-            "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%.0f"),
-            "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%.0f"),
-            "Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f")
+            "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+            "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
+            "Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f%%")
         }
     )

@@ -343,78 +343,68 @@ def get_plotly_theme() -> dict:
             '#5AC8FA',  # Light Blue
             '#FFCC00',  # Yellow
         ],
-        'layout': {
-            'font': {
-                'family': 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
-                'color': '#1D1D1F',
-                'size': 12
-            },
-            'title': {
-                'font': {
-                    'size': 18,
-                    'color': '#1D1D1F',
-                    'family': 'Inter, -apple-system, BlinkMacSystemFont, sans-serif'
-                },
-                'x': 0,
-                'xanchor': 'left'
-            },
-            'paper_bgcolor': 'rgba(0,0,0,0)',
-            'plot_bgcolor': 'rgba(0,0,0,0)',
-            'margin': {'t': 60, 'b': 40, 'l': 60, 'r': 40},
-            'xaxis': {
-                'gridcolor': '#E5E5E7',
-                'linecolor': '#E5E5E7',
-                'tickfont': {'size': 11, 'color': '#86868B'},
-                'title': {'font': {'size': 12, 'color': '#86868B'}}
-            },
-            'yaxis': {
-                'gridcolor': '#E5E5E7',
-                'linecolor': '#E5E5E7',
-                'tickfont': {'size': 11, 'color': '#86868B'},
-                'title': {'font': {'size': 12, 'color': '#86868B'}}
-            },
-            'legend': {
-                'font': {'size': 11, 'color': '#1D1D1F'},
-                'bgcolor': 'rgba(255,255,255,0.8)',
-                'bordercolor': '#E5E5E7',
-                'borderwidth': 1
-            },
-            'hoverlabel': {
-                'bgcolor': '#1D1D1F',
-                'font': {'color': 'white', 'size': 12},
-                'bordercolor': '#1D1D1F'
-            }
+        # Simplified layout - apply these directly, don't use with **spread
+        'font_family': 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
+        'font_color': '#1D1D1F',
+        'paper_bgcolor': 'rgba(0,0,0,0)',
+        'plot_bgcolor': 'rgba(0,0,0,0)',
+        'margin': {'t': 60, 'b': 40, 'l': 60, 'r': 40},
+        'gridcolor': '#E5E5E7',
+        'tickfont_color': '#86868B',
+        'hoverlabel': {
+            'bgcolor': '#1D1D1F',
+            'font': {'color': 'white', 'size': 12},
+            'bordercolor': '#1D1D1F'
         }
     }
 
 
-def apply_plotly_theme(fig):
-    """Apply Apple-like theme to a Plotly figure."""
-    theme = get_plotly_theme()
+def apply_chart_theme(fig, theme=None):
+    """Apply Apple-like theme to a Plotly figure safely."""
+    if theme is None:
+        theme = get_plotly_theme()
 
     fig.update_layout(
-        font=theme['layout']['font'],
-        paper_bgcolor=theme['layout']['paper_bgcolor'],
-        plot_bgcolor=theme['layout']['plot_bgcolor'],
-        margin=theme['layout']['margin'],
-        xaxis=theme['layout']['xaxis'],
-        yaxis=theme['layout']['yaxis'],
-        legend=theme['layout']['legend'],
-        hoverlabel=theme['layout']['hoverlabel']
+        font=dict(
+            family=theme['font_family'],
+            color=theme['font_color'],
+            size=12
+        ),
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
+        margin=theme['margin'],
+        hoverlabel=theme['hoverlabel']
     )
 
-    # Update color sequence
-    fig.update_traces(
-        marker_color=theme['color_discrete_sequence'][0]
+    # Update axes styling
+    fig.update_xaxes(
+        gridcolor=theme['gridcolor'],
+        linecolor=theme['gridcolor'],
+        tickfont=dict(size=11, color=theme['tickfont_color'])
+    )
+    fig.update_yaxes(
+        gridcolor=theme['gridcolor'],
+        linecolor=theme['gridcolor'],
+        tickfont=dict(size=11, color=theme['tickfont_color'])
     )
 
     return fig
 
 
-def format_number(value: float, decimals: int = 0, prefix: str = '', suffix: str = '') -> str:
-    """Format a number with proper thousand separators."""
+def apply_plotly_theme(fig):
+    """Apply Apple-like theme to a Plotly figure (legacy wrapper)."""
+    return apply_chart_theme(fig)
+
+
+def format_number(value, decimals: int = 1, prefix: str = '', suffix: str = '') -> str:
+    """Format a number with proper thousand separators and abbreviations."""
     if value is None:
         return 'N/A'
+    try:
+        value = float(value)
+    except (ValueError, TypeError):
+        return 'N/A'
+
     if abs(value) >= 1_000_000_000:
         return f"{prefix}{value/1_000_000_000:,.{decimals}f}B{suffix}"
     elif abs(value) >= 1_000_000:
@@ -423,3 +413,30 @@ def format_number(value: float, decimals: int = 0, prefix: str = '', suffix: str
         return f"{prefix}{value/1_000:,.{decimals}f}K{suffix}"
     else:
         return f"{prefix}{value:,.{decimals}f}{suffix}"
+
+
+def format_currency(value, decimals: int = 1) -> str:
+    """Format a number as currency with $ prefix."""
+    return format_number(value, decimals=decimals, prefix='$')
+
+
+def format_percent(value, decimals: int = 1) -> str:
+    """Format a number as percentage."""
+    if value is None:
+        return 'N/A'
+    try:
+        return f"{float(value):,.{decimals}f}%"
+    except (ValueError, TypeError):
+        return 'N/A'
+
+
+def format_with_commas(value, decimals: int = 0) -> str:
+    """Format a number with commas for thousands."""
+    if value is None:
+        return 'N/A'
+    try:
+        if decimals == 0:
+            return f"{int(value):,}"
+        return f"{float(value):,.{decimals}f}"
+    except (ValueError, TypeError):
+        return 'N/A'

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme
+from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_currency, format_with_commas, format_percent
 from utils.database import DatabaseManager
 from utils.exports import create_download_buttons
 
@@ -90,7 +90,9 @@ orders_df = DatabaseManager.get_equipment_orders(
     equipment_type=equipment_type
 )
 
+# Get theme colors
 theme = get_plotly_theme()
+colors = theme['color_discrete_sequence']
 
 # Main content tabs
 tab1, tab2, tab3 = st.tabs(["Overview", "Vendor Analysis", "Order Details"])
@@ -103,25 +105,21 @@ with tab1:
 
         with col1:
             total_orders = len(orders_df)
-            st.metric("Total Orders", f"{total_orders:,}")
+            st.metric("Total Orders", format_with_commas(total_orders))
 
         with col2:
             total_spend = orders_df['amount_usd'].sum()
-            if total_spend >= 1_000_000_000:
-                spend_str = f"${total_spend/1_000_000_000:.1f}B"
-            elif total_spend >= 1_000_000:
-                spend_str = f"${total_spend/1_000_000:.0f}M"
-            else:
-                spend_str = f"${total_spend:,.0f}"
-            st.metric("Total Spend", spend_str)
+            st.metric("Total Spend", format_currency(total_spend))
 
         with col3:
             total_units = orders_df['units'].sum()
-            st.metric("Total Units", f"{total_units:,}")
+            st.metric("Total Units", format_with_commas(total_units))
 
         with col4:
-            unique_vendors = orders_df['vendor'].nunique()
-            st.metric("Unique Vendors", unique_vendors)
+            # Filter out NULL/empty vendors before counting
+            valid_vendors = orders_df[orders_df['vendor'].notna() & (orders_df['vendor'] != '') & (orders_df['vendor'] != 'Unknown')]
+            unique_vendors = valid_vendors['vendor'].nunique()
+            st.metric("Unique Vendors", format_with_commas(unique_vendors))
 
         st.divider()
 
@@ -131,77 +129,86 @@ with tab1:
         with col1:
             st.markdown("#### Equipment Spend by Year")
 
-            # Use po_year column directly since po_date is often NULL
-            spend_by_year = orders_df.groupby('po_year')['amount_usd'].sum().reset_index()
+            # Filter valid years and group
+            valid_years = orders_df[orders_df['po_year'].notna()]
+            spend_by_year = valid_years.groupby('po_year')['amount_usd'].sum().reset_index()
             spend_by_year.columns = ['year', 'amount_usd']
 
-            fig = px.bar(
-                spend_by_year,
-                x='year',
-                y='amount_usd',
-                color_discrete_sequence=theme['color_discrete_sequence']
-            )
-            fig.update_layout(
-                **theme['layout'],
-                showlegend=False,
-                xaxis_title="Year",
-                yaxis_title="Spend (USD)",
-                height=350
-            )
-            fig.update_traces(marker_color=theme['color_discrete_sequence'][0])
-            st.plotly_chart(fig, use_container_width=True)
+            if len(spend_by_year) > 0:
+                fig = px.bar(
+                    spend_by_year,
+                    x='year',
+                    y='amount_usd'
+                )
+                fig.update_traces(
+                    marker_color=colors[0],
+                    hovertemplate='Year %{x}<br>Spend: $%{y:,.0f}<extra></extra>'
+                )
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    showlegend=False,
+                    xaxis_title="Year",
+                    yaxis_title="Spend (USD)",
+                    height=350
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.markdown("#### Orders by Equipment Type")
 
-            type_counts = orders_df.groupby('equipment_type').agg({
+            # Filter out NULL/empty equipment types
+            valid_types = orders_df[orders_df['equipment_type'].notna() & (orders_df['equipment_type'] != '')]
+            type_counts = valid_types.groupby('equipment_type').agg({
                 'amount_usd': 'sum',
                 'id': 'count'
             }).reset_index()
             type_counts.columns = ['Equipment Type', 'Total Spend', 'Order Count']
             type_counts = type_counts.nlargest(10, 'Total Spend')
 
-            fig = px.pie(
-                type_counts,
-                values='Total Spend',
-                names='Equipment Type',
-                color_discrete_sequence=theme['color_discrete_sequence'],
-                hole=0.4
-            )
-            fig.update_layout(
-                **theme['layout'],
-                height=350
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if len(type_counts) > 0:
+                fig = px.pie(
+                    type_counts,
+                    values='Total Spend',
+                    names='Equipment Type',
+                    color_discrete_sequence=colors,
+                    hole=0.4
+                )
+                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f} (%{percent})<extra></extra>')
+                apply_chart_theme(fig)
+                fig.update_layout(height=350)
+                st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
 
         # Spend over time trend
         st.markdown("#### Equipment Spending Trend by Quarter")
 
-        # Use po_year and po_quarter for trend since po_date is often NULL
-        quarterly_spend = orders_df.groupby(['po_year', 'po_quarter'])['amount_usd'].sum().reset_index()
+        # Filter valid quarters and group
+        valid_quarters = orders_df[orders_df['po_year'].notna() & orders_df['po_quarter'].notna()]
+        quarterly_spend = valid_quarters.groupby(['po_year', 'po_quarter'])['amount_usd'].sum().reset_index()
         quarterly_spend = quarterly_spend.sort_values(['po_year', 'po_quarter'])
-        quarterly_spend['period'] = quarterly_spend['po_year'].astype(str) + ' ' + quarterly_spend['po_quarter'].fillna('')
+        quarterly_spend['period'] = quarterly_spend['po_year'].astype(int).astype(str) + ' ' + quarterly_spend['po_quarter'].astype(str)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=quarterly_spend['period'],
-            y=quarterly_spend['amount_usd'],
-            mode='lines+markers',
-            fill='tozeroy',
-            line=dict(color=theme['color_discrete_sequence'][0], width=2),
-            fillcolor='rgba(0, 122, 255, 0.1)',
-            marker=dict(size=4)
-        ))
-        fig.update_layout(
-            **theme['layout'],
-            xaxis_title="Quarter",
-            yaxis_title="Spend (USD)",
-            height=350,
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if len(quarterly_spend) > 0:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=quarterly_spend['period'].tolist(),
+                y=quarterly_spend['amount_usd'].tolist(),
+                mode='lines+markers',
+                fill='tozeroy',
+                line=dict(color=colors[0], width=2),
+                fillcolor='rgba(0, 122, 255, 0.1)',
+                marker=dict(size=4),
+                hovertemplate='%{x}<br>Spend: $%{y:,.0f}<extra></extra>'
+            ))
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Quarter",
+                yaxis_title="Spend (USD)",
+                height=350,
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.info("No equipment order data available for the selected filters.")
@@ -218,6 +225,14 @@ with tab2:
             end_year=end_year
         )
 
+        # Filter out NULL/empty/Unknown vendors
+        if len(vendor_spend) > 0:
+            vendor_spend = vendor_spend[
+                vendor_spend['vendor'].notna() &
+                (vendor_spend['vendor'] != '') &
+                (vendor_spend['vendor'] != 'Unknown')
+            ]
+
         if len(vendor_spend) > 0:
             top_vendors = vendor_spend.head(15)
 
@@ -225,17 +240,19 @@ with tab2:
                 top_vendors,
                 x='total_spend',
                 y='vendor',
-                orientation='h',
-                color_discrete_sequence=theme['color_discrete_sequence']
+                orientation='h'
             )
+            fig.update_traces(
+                marker_color=colors[0],
+                hovertemplate='%{y}<br>Total Spend: $%{x:,.0f}<extra></extra>'
+            )
+            apply_chart_theme(fig)
             fig.update_layout(
-                **theme['layout'],
                 showlegend=False,
                 xaxis_title="Total Spend (USD)",
                 yaxis_title="",
                 height=500
             )
-            fig.update_traces(marker_color=theme['color_discrete_sequence'][0])
             st.plotly_chart(fig, use_container_width=True)
 
             st.divider()
@@ -252,47 +269,47 @@ with tab2:
                 hide_index=True,
                 column_config={
                     "vendor": st.column_config.TextColumn("Vendor", width="medium"),
-                    "total_spend": st.column_config.NumberColumn("Total Spend", format="$%.0f"),
-                    "total_units": st.column_config.NumberColumn("Total Units", format="%.0f"),
-                    "order_count": st.column_config.NumberColumn("Orders", format="%.0f"),
-                    "avg_order_value": st.column_config.NumberColumn("Avg Order Value", format="$%.0f")
+                    "total_spend": st.column_config.NumberColumn("Total Spend", format="$%,.0f"),
+                    "total_units": st.column_config.NumberColumn("Total Units", format="%,.0f"),
+                    "order_count": st.column_config.NumberColumn("Orders", format="%,.0f"),
+                    "avg_order_value": st.column_config.NumberColumn("Avg Order Value", format="$%,.0f")
                 }
             )
 
             create_download_buttons(vendor_spend, "vendor_analysis", "Vendor Analysis Report")
 
-        # Vendor market share
-        st.divider()
-        st.markdown("#### Vendor Market Share")
+            # Vendor market share
+            st.divider()
+            st.markdown("#### Vendor Market Share")
 
-        col1, col2 = st.columns(2)
+            col1, col2 = st.columns(2)
 
-        with col1:
-            if len(vendor_spend) > 0:
+            with col1:
                 top_10_vendors = vendor_spend.head(10)
                 other_spend = vendor_spend.iloc[10:]['total_spend'].sum() if len(vendor_spend) > 10 else 0
 
-                pie_data = pd.concat([
-                    top_10_vendors[['vendor', 'total_spend']],
-                    pd.DataFrame({'vendor': ['Other'], 'total_spend': [other_spend]})
-                ]) if other_spend > 0 else top_10_vendors[['vendor', 'total_spend']]
+                if other_spend > 0:
+                    pie_data = pd.concat([
+                        top_10_vendors[['vendor', 'total_spend']],
+                        pd.DataFrame({'vendor': ['Other'], 'total_spend': [other_spend]})
+                    ])
+                else:
+                    pie_data = top_10_vendors[['vendor', 'total_spend']]
 
                 fig = px.pie(
                     pie_data,
                     values='total_spend',
                     names='vendor',
-                    color_discrete_sequence=theme['color_discrete_sequence'],
+                    color_discrete_sequence=colors,
                     hole=0.4
                 )
-                fig.update_layout(
-                    **theme['layout'],
-                    height=400
-                )
+                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f} (%{percent})<extra></extra>')
+                apply_chart_theme(fig)
+                fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
 
-        with col2:
-            st.markdown("##### Key Insights")
-            if len(vendor_spend) > 0:
+            with col2:
+                st.markdown("##### Key Insights")
                 top_vendor = vendor_spend.iloc[0]
                 total_market = vendor_spend['total_spend'].sum()
                 top_share = (top_vendor['total_spend'] / total_market * 100) if total_market > 0 else 0
@@ -314,6 +331,9 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
 
+        else:
+            st.info("No vendor data available for the selected filters.")
+
     else:
         st.info("No vendor data available for the selected filters.")
 
@@ -323,9 +343,9 @@ with tab3:
     if len(orders_df) > 0:
         st.markdown("#### Equipment Purchase Orders")
 
-        # Display columns
+        # Display columns - use po_year instead of po_date
         display_cols = [
-            'po_date', 'manufacturer', 'factory', 'vendor',
+            'po_year', 'po_quarter', 'manufacturer', 'factory', 'vendor',
             'equipment_type', 'tool_category', 'units', 'amount_usd'
         ]
         available_cols = [c for c in display_cols if c in orders_df.columns]
@@ -336,14 +356,15 @@ with tab3:
             hide_index=True,
             height=500,
             column_config={
-                "po_date": st.column_config.TextColumn("PO Date", width="small"),
+                "po_year": st.column_config.NumberColumn("Year", format="%d"),
+                "po_quarter": st.column_config.TextColumn("Quarter", width="small"),
                 "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
                 "factory": st.column_config.TextColumn("Factory", width="medium"),
                 "vendor": st.column_config.TextColumn("Vendor", width="medium"),
                 "equipment_type": st.column_config.TextColumn("Equipment", width="medium"),
                 "tool_category": st.column_config.TextColumn("Category", width="small"),
-                "units": st.column_config.NumberColumn("Units", format="%.0f"),
-                "amount_usd": st.column_config.NumberColumn("Amount (USD)", format="$%.0f")
+                "units": st.column_config.NumberColumn("Units", format="%,.0f"),
+                "amount_usd": st.column_config.NumberColumn("Amount (USD)", format="$%,.0f")
             }
         )
 
@@ -354,7 +375,9 @@ with tab3:
         st.divider()
         st.markdown("#### Orders by Manufacturer")
 
-        mfr_summary = orders_df.groupby('manufacturer').agg({
+        # Filter out NULL/empty manufacturers
+        valid_mfr = orders_df[orders_df['manufacturer'].notna() & (orders_df['manufacturer'] != '')]
+        mfr_summary = valid_mfr.groupby('manufacturer').agg({
             'amount_usd': 'sum',
             'units': 'sum',
             'id': 'count'
@@ -362,21 +385,24 @@ with tab3:
         mfr_summary.columns = ['Manufacturer', 'Total Spend', 'Total Units', 'Order Count']
         mfr_summary = mfr_summary.sort_values('Total Spend', ascending=False)
 
-        fig = px.bar(
-            mfr_summary.head(15),
-            x='Manufacturer',
-            y='Total Spend',
-            color_discrete_sequence=theme['color_discrete_sequence']
-        )
-        fig.update_layout(
-            **theme['layout'],
-            showlegend=False,
-            xaxis_title="",
-            yaxis_title="Total Spend (USD)",
-            height=350
-        )
-        fig.update_traces(marker_color=theme['color_discrete_sequence'][0])
-        st.plotly_chart(fig, use_container_width=True)
+        if len(mfr_summary) > 0:
+            fig = px.bar(
+                mfr_summary.head(15),
+                x='Manufacturer',
+                y='Total Spend'
+            )
+            fig.update_traces(
+                marker_color=colors[0],
+                hovertemplate='%{x}<br>Spend: $%{y:,.0f}<extra></extra>'
+            )
+            apply_chart_theme(fig)
+            fig.update_layout(
+                showlegend=False,
+                xaxis_title="",
+                yaxis_title="Total Spend (USD)",
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.info("No order data available for the selected filters.")
