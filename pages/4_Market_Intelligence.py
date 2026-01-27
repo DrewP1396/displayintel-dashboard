@@ -118,8 +118,13 @@ with tab1:
             st.metric("Total Revenue", format_currency(total_revenue))
 
         with col3:
-            # Filter valid panel makers
-            valid_makers = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+            # Filter valid panel makers (exclude aggregates)
+            valid_makers = shipments_df[
+                shipments_df['panel_maker'].notna() &
+                (shipments_df['panel_maker'] != '') &
+                (shipments_df['panel_maker'] != 'ALL') &
+                (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+            ]
             unique_makers = valid_makers['panel_maker'].nunique()
             st.metric("Panel Makers", format_with_commas(unique_makers))
 
@@ -314,8 +319,13 @@ with tab2:
         # Panel Maker Market Share Section
         st.markdown("##### Panel Maker Market Share")
 
-        # Filter valid panel makers
-        maker_df = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+        # Filter valid panel makers (exclude "ALL" aggregate)
+        maker_df = shipments_df[
+            shipments_df['panel_maker'].notna() &
+            (shipments_df['panel_maker'] != '') &
+            (shipments_df['panel_maker'] != 'ALL') &
+            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+        ]
 
         maker_share = maker_df.groupby('panel_maker').agg({
             'revenue_m': 'sum',
@@ -590,8 +600,13 @@ with tab4:
     if len(shipments_df) > 0:
         st.markdown("#### Panel Maker Market Share")
 
-        # Filter valid panel makers
-        maker_data = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+        # Filter valid panel makers (exclude "ALL" aggregate and "/Others" combinations)
+        maker_data = shipments_df[
+            shipments_df['panel_maker'].notna() &
+            (shipments_df['panel_maker'] != '') &
+            (shipments_df['panel_maker'] != 'ALL') &
+            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+        ]
         maker_revenue = maker_data.groupby('panel_maker')['revenue_m'].sum().sort_values(ascending=False)
         total_revenue = maker_revenue.sum()
 
