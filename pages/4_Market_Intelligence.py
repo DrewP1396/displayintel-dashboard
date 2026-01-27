@@ -1,13 +1,13 @@
 """
-Intel Page - Display Intelligence Dashboard
-Market insights, shipment analytics, and strategic intelligence.
+Market Intelligence Page - Display Intelligence Dashboard
+Market insights, shipment analytics, competitive analysis, and strategic intelligence.
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -19,7 +19,7 @@ from utils.exports import create_download_buttons
 
 # Page config
 st.set_page_config(
-    page_title="Intel - Display Intelligence",
+    page_title="Market Intelligence - Display Intelligence",
     page_icon="📈",
     layout="wide"
 )
@@ -64,25 +64,27 @@ with st.sidebar:
 
     st.divider()
 
-    st.markdown("### Date Range")
+    st.markdown("### Year Range")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "Start",
-            value=date(2022, 1, 1),
-            key="intel_start"
+        start_year = st.selectbox(
+            "Start Year",
+            options=list(range(2016, 2030)),
+            index=6,  # Default to 2022
+            key="intel_start_year"
         )
     with col2:
-        end_date = st.date_input(
-            "End",
-            value=date.today(),
-            key="intel_end"
+        end_year = st.selectbox(
+            "End Year",
+            options=list(range(2016, 2030)),
+            index=13,  # Default to 2029
+            key="intel_end_year"
         )
 
 # Load shipment data
 shipments_df = DatabaseManager.get_shipments(
-    start_date=start_date.strftime("%Y-%m-%d"),
-    end_date=end_date.strftime("%Y-%m-%d"),
+    start_year=start_year,
+    end_year=end_year,
     panel_maker=panel_maker,
     technology=technology,
     application=application
@@ -91,7 +93,7 @@ shipments_df = DatabaseManager.get_shipments(
 theme = get_plotly_theme()
 
 # Main content tabs
-tab1, tab2, tab3, tab4 = st.tabs(["Market Overview", "Application Analysis", "Panel Makers", "Detailed Data"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Competitive Analysis", "Application Analysis", "Panel Makers", "Detailed Data"])
 
 # Tab 1: Market Overview
 with tab1:
@@ -128,16 +130,21 @@ with tab1:
         # Shipments over time
         st.markdown("#### Shipment Volume Trends")
 
-        shipments_df['month'] = pd.to_datetime(shipments_df['date']).dt.to_period('M').astype(str)
-        monthly_shipments = shipments_df.groupby('month').agg({
+        # Use date column directly as period (format: "YYYY-QX YYYY")
+        # Filter out annual aggregates (ALL) for cleaner time series
+        shipments_ts = shipments_df[~shipments_df['date'].str.contains('ALL', na=False)].copy()
+        # Extract period for grouping (first part before space)
+        shipments_ts['period'] = shipments_ts['date'].str.split(' ').str[0]
+        monthly_shipments = shipments_ts.groupby('period').agg({
             'units_k': 'sum',
             'revenue_m': 'sum'
         }).reset_index()
+        monthly_shipments = monthly_shipments.sort_values('period')
 
         fig = go.Figure()
 
         fig.add_trace(go.Bar(
-            x=monthly_shipments['month'],
+            x=monthly_shipments['period'],
             y=monthly_shipments['units_k'],
             name='Units (K)',
             marker_color=theme['color_discrete_sequence'][0],
@@ -145,7 +152,7 @@ with tab1:
         ))
 
         fig.add_trace(go.Scatter(
-            x=monthly_shipments['month'],
+            x=monthly_shipments['period'],
             y=monthly_shipments['revenue_m'],
             name='Revenue ($M)',
             mode='lines+markers',
@@ -156,7 +163,7 @@ with tab1:
 
         fig.update_layout(
             **theme['layout'],
-            xaxis_title="Month",
+            xaxis_title="Quarter",
             yaxis=dict(title="Units (K)", side='left'),
             yaxis2=dict(title="Revenue ($M)", overlaying='y', side='right'),
             height=400,
@@ -208,20 +215,286 @@ with tab1:
         st.info("No shipment data available for the selected filters.")
 
 
-# Tab 2: Application Analysis
+# Tab 2: Competitive Analysis
 with tab2:
+    if len(shipments_df) > 0:
+        st.markdown("#### Competitive Products Analysis")
+        st.markdown("""
+        <p style="color: #86868B; margin-bottom: 1.5rem;">
+            Compare panel makers across technologies, applications, and market performance
+        </p>
+        """, unsafe_allow_html=True)
+
+        # Technology Breakdown Section
+        st.markdown("##### Technology Breakdown: LCD vs OLED")
+
+        # Handle NULL/None technology values
+        tech_df = shipments_df.copy()
+        tech_df['technology'] = tech_df['technology'].fillna('Unknown').replace('', 'Unknown')
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Technology market share by revenue
+            tech_revenue = tech_df.groupby('technology').agg({
+                'revenue_m': 'sum',
+                'units_k': 'sum'
+            }).reset_index()
+            tech_revenue['market_share'] = tech_revenue['revenue_m'] / tech_revenue['revenue_m'].sum() * 100
+
+            fig = px.pie(
+                tech_revenue,
+                values='revenue_m',
+                names='technology',
+                title='Revenue Share by Technology',
+                color_discrete_sequence=theme['color_discrete_sequence'],
+                hole=0.4
+            )
+            fig.update_layout(
+                **theme['layout'],
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            # Technology units comparison
+            fig = px.bar(
+                tech_revenue,
+                x='technology',
+                y='units_k',
+                title='Total Units by Technology (K)',
+                color='technology',
+                color_discrete_sequence=theme['color_discrete_sequence']
+            )
+            fig.update_layout(
+                **theme['layout'],
+                showlegend=False,
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Technology trends over time
+        st.markdown("##### Technology Trends Over Time")
+
+        tech_ts = tech_df[~tech_df['date'].str.contains('ALL', na=False)].copy()
+        tech_ts['period'] = tech_ts['date'].str.split(' ').str[0]
+        tech_trends = tech_ts.groupby(['period', 'technology']).agg({
+            'revenue_m': 'sum',
+            'units_k': 'sum'
+        }).reset_index()
+        tech_trends = tech_trends.sort_values('period')
+
+        fig = px.area(
+            tech_trends,
+            x='period',
+            y='revenue_m',
+            color='technology',
+            title='Revenue by Technology Over Time',
+            color_discrete_sequence=theme['color_discrete_sequence']
+        )
+        fig.update_layout(
+            **theme['layout'],
+            xaxis_title="Quarter",
+            yaxis_title="Revenue ($M)",
+            height=400,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Panel Maker Market Share Section
+        st.markdown("##### Panel Maker Market Share")
+
+        # Handle NULL/None panel_maker values
+        maker_df = shipments_df.copy()
+        maker_df['panel_maker'] = maker_df['panel_maker'].fillna('Unknown').replace('', 'Unknown')
+
+        maker_share = maker_df.groupby('panel_maker').agg({
+            'revenue_m': 'sum',
+            'units_k': 'sum'
+        }).reset_index()
+        maker_share = maker_share.sort_values('revenue_m', ascending=False)
+        maker_share['market_share'] = maker_share['revenue_m'] / maker_share['revenue_m'].sum() * 100
+
+        # Top 10 panel makers
+        top_10_makers = maker_share.head(10)
+
+        fig = px.bar(
+            top_10_makers,
+            x='market_share',
+            y='panel_maker',
+            orientation='h',
+            title='Top 10 Panel Makers by Market Share (%)',
+            color='market_share',
+            color_continuous_scale='Blues'
+        )
+        fig.update_layout(
+            **theme['layout'],
+            showlegend=False,
+            xaxis_title="Market Share (%)",
+            yaxis_title="",
+            height=450
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Panel Maker by Technology breakdown
+        st.markdown("##### Panel Maker Portfolio by Technology")
+
+        maker_tech = maker_df.groupby(['panel_maker', 'technology'])['revenue_m'].sum().reset_index()
+        top_makers_list = maker_share.head(8)['panel_maker'].tolist()
+        maker_tech_filtered = maker_tech[maker_tech['panel_maker'].isin(top_makers_list)]
+
+        fig = px.bar(
+            maker_tech_filtered,
+            x='panel_maker',
+            y='revenue_m',
+            color='technology',
+            title='Technology Mix by Panel Maker',
+            barmode='stack',
+            color_discrete_sequence=theme['color_discrete_sequence']
+        )
+        fig.update_layout(
+            **theme['layout'],
+            xaxis_title="Panel Maker",
+            yaxis_title="Revenue ($M)",
+            height=400,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Application Trends Section
+        st.markdown("##### Application Market Trends")
+
+        # Handle NULL/None application values
+        app_df = shipments_df.copy()
+        app_df['application'] = app_df['application'].fillna('Unknown').replace('', 'Unknown')
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Application revenue share
+            app_share = app_df.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
+            top_apps = app_share.head(6)
+
+            fig = px.pie(
+                values=top_apps.values,
+                names=top_apps.index,
+                title='Revenue by Application',
+                color_discrete_sequence=theme['color_discrete_sequence'],
+                hole=0.4
+            )
+            fig.update_layout(
+                **theme['layout'],
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            # Application units comparison
+            app_units = app_df.groupby('application')['units_k'].sum().sort_values(ascending=False).head(6)
+
+            fig = px.bar(
+                x=app_units.index,
+                y=app_units.values,
+                title='Units by Application (K)',
+                color_discrete_sequence=theme['color_discrete_sequence']
+            )
+            fig.update_layout(
+                **theme['layout'],
+                showlegend=False,
+                xaxis_title="Application",
+                yaxis_title="Units (K)",
+                height=350
+            )
+            fig.update_traces(marker_color=theme['color_discrete_sequence'][0])
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Application trends over time
+        app_ts = app_df[~app_df['date'].str.contains('ALL', na=False)].copy()
+        app_ts['period'] = app_ts['date'].str.split(' ').str[0]
+        app_trends = app_ts.groupby(['period', 'application']).agg({
+            'revenue_m': 'sum'
+        }).reset_index()
+        app_trends = app_trends.sort_values('period')
+
+        # Filter to top 5 applications for cleaner chart
+        top_5_apps = app_share.head(5).index.tolist()
+        app_trends_filtered = app_trends[app_trends['application'].isin(top_5_apps)]
+
+        fig = px.line(
+            app_trends_filtered,
+            x='period',
+            y='revenue_m',
+            color='application',
+            title='Application Revenue Trends (Top 5)',
+            color_discrete_sequence=theme['color_discrete_sequence'],
+            markers=True
+        )
+        fig.update_layout(
+            **theme['layout'],
+            xaxis_title="Quarter",
+            yaxis_title="Revenue ($M)",
+            height=400,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Summary metrics table
+        st.markdown("##### Competitive Summary")
+
+        summary_data = pd.DataFrame({
+            'Metric': ['Total Market Revenue', 'Total Units Shipped', 'Top Technology', 'Market Leader', 'Top Application'],
+            'Value': [
+                f"${maker_share['revenue_m'].sum():,.0f}M",
+                f"{maker_share['units_k'].sum():,.0f}K",
+                tech_revenue.loc[tech_revenue['revenue_m'].idxmax(), 'technology'] if len(tech_revenue) > 0 else 'N/A',
+                maker_share.iloc[0]['panel_maker'] if len(maker_share) > 0 else 'N/A',
+                app_share.index[0] if len(app_share) > 0 else 'N/A'
+            ]
+        })
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(
+                summary_data,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="medium")
+                }
+            )
+
+    else:
+        st.info("No competitive data available for the selected filters.")
+
+
+# Tab 3: Application Analysis
+with tab3:
     if len(shipments_df) > 0:
         st.markdown("#### Application Performance Over Time")
 
-        # Application trends
-        app_monthly = shipments_df.groupby(['month', 'application']).agg({
+        # Application trends - filter out annual aggregates and extract period
+        app_ts = shipments_df[~shipments_df['date'].str.contains('ALL', na=False)].copy()
+        app_ts['period'] = app_ts['date'].str.split(' ').str[0]
+        app_monthly = app_ts.groupby(['period', 'application']).agg({
             'units_k': 'sum',
             'revenue_m': 'sum'
         }).reset_index()
+        app_monthly = app_monthly.sort_values('period')
 
         fig = px.line(
             app_monthly,
-            x='month',
+            x='period',
             y='units_k',
             color='application',
             color_discrete_sequence=theme['color_discrete_sequence'],
@@ -229,7 +502,7 @@ with tab2:
         )
         fig.update_layout(
             **theme['layout'],
-            xaxis_title="Month",
+            xaxis_title="Quarter",
             yaxis_title="Units (K)",
             height=400,
             legend=dict(orientation='h', yanchor='bottom', y=1.02)
@@ -290,8 +563,8 @@ with tab2:
         st.info("No application data available.")
 
 
-# Tab 3: Panel Makers
-with tab3:
+# Tab 4: Panel Makers
+with tab4:
     if len(shipments_df) > 0:
         st.markdown("#### Panel Maker Market Share")
 
@@ -386,12 +659,16 @@ with tab3:
         st.markdown("#### Panel Maker Trends Over Time")
 
         top_5_makers = maker_revenue.head(5).index.tolist()
-        maker_trends = shipments_df[shipments_df['panel_maker'].isin(top_5_makers)]
-        maker_monthly = maker_trends.groupby(['month', 'panel_maker'])['revenue_m'].sum().reset_index()
+        maker_trends = shipments_df[shipments_df['panel_maker'].isin(top_5_makers)].copy()
+        # Filter out annual aggregates and extract period
+        maker_trends = maker_trends[~maker_trends['date'].str.contains('ALL', na=False)]
+        maker_trends['period'] = maker_trends['date'].str.split(' ').str[0]
+        maker_monthly = maker_trends.groupby(['period', 'panel_maker'])['revenue_m'].sum().reset_index()
+        maker_monthly = maker_monthly.sort_values('period')
 
         fig = px.line(
             maker_monthly,
-            x='month',
+            x='period',
             y='revenue_m',
             color='panel_maker',
             color_discrete_sequence=theme['color_discrete_sequence'],
@@ -399,7 +676,7 @@ with tab3:
         )
         fig.update_layout(
             **theme['layout'],
-            xaxis_title="Month",
+            xaxis_title="Quarter",
             yaxis_title="Revenue ($M)",
             height=400,
             legend=dict(orientation='h', yanchor='bottom', y=1.02)
@@ -410,8 +687,8 @@ with tab3:
         st.info("No panel maker data available.")
 
 
-# Tab 4: Detailed Data
-with tab4:
+# Tab 5: Detailed Data
+with tab5:
     if len(shipments_df) > 0:
         st.markdown("#### Shipment Records")
 

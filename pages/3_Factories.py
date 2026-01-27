@@ -133,7 +133,10 @@ with tab1:
 
     with col1:
         st.markdown("#### Factories by Manufacturer")
-        mfr_counts = factories_df['manufacturer'].value_counts().head(15)
+        # Handle NULL/None manufacturer values
+        mfr_df = factories_df.copy()
+        mfr_df['manufacturer'] = mfr_df['manufacturer'].fillna('Unknown').replace('', 'Unknown')
+        mfr_counts = mfr_df['manufacturer'].value_counts().head(15)
 
         fig = px.bar(
             x=mfr_counts.values,
@@ -153,7 +156,10 @@ with tab1:
 
     with col2:
         st.markdown("#### Factories by Technology")
-        tech_counts = factories_df['technology'].value_counts()
+        # Handle NULL/None technology values
+        tech_df = factories_df.copy()
+        tech_df['technology'] = tech_df['technology'].fillna('Unknown').replace('', 'Unknown')
+        tech_counts = tech_df['technology'].value_counts()
 
         fig = px.pie(
             values=tech_counts.values,
@@ -269,7 +275,10 @@ with tab2:
         with col1:
             st.markdown("#### Utilization by Manufacturer")
 
-            util_by_mfr = util_df.groupby('manufacturer')['utilization_pct'].mean().sort_values(ascending=True)
+            # Handle NULL/None manufacturer values
+            util_mfr_df = util_df.copy()
+            util_mfr_df['manufacturer'] = util_mfr_df['manufacturer'].fillna('Unknown').replace('', 'Unknown')
+            util_by_mfr = util_mfr_df.groupby('manufacturer')['utilization_pct'].mean().sort_values(ascending=True)
 
             fig = px.bar(
                 x=util_by_mfr.values,
@@ -395,7 +404,10 @@ with tab3:
             st.markdown("#### Capacity Share by Manufacturer")
 
             latest_date = util_df['date'].max()
-            latest_capacity = util_df[util_df['date'] == latest_date].groupby('manufacturer')['capacity_ksheets'].sum()
+            # Handle NULL/None manufacturer values
+            capacity_df = util_df[util_df['date'] == latest_date].copy()
+            capacity_df['manufacturer'] = capacity_df['manufacturer'].fillna('Unknown').replace('', 'Unknown')
+            latest_capacity = capacity_df.groupby('manufacturer')['capacity_ksheets'].sum()
 
             fig = px.pie(
                 values=latest_capacity.values,
@@ -412,7 +424,10 @@ with tab3:
         with col2:
             st.markdown("#### Capacity by Technology")
 
-            capacity_by_tech = util_df.groupby('technology')['capacity_ksheets'].sum()
+            # Handle NULL/None technology values
+            tech_util_df = util_df.copy()
+            tech_util_df['technology'] = tech_util_df['technology'].fillna('Unknown').replace('', 'Unknown')
+            capacity_by_tech = tech_util_df.groupby('technology')['capacity_ksheets'].sum()
 
             fig = px.bar(
                 x=capacity_by_tech.index,
@@ -433,7 +448,10 @@ with tab3:
         st.divider()
         st.markdown("#### Regional Capacity Distribution")
 
-        capacity_by_region = util_df.groupby('region')['capacity_ksheets'].sum().sort_values(ascending=False)
+        # Handle NULL/None region values
+        region_df = util_df.copy()
+        region_df['region'] = region_df['region'].fillna('Unknown').replace('', 'Unknown')
+        capacity_by_region = region_df.groupby('region')['capacity_ksheets'].sum().sort_values(ascending=False)
 
         fig = px.bar(
             x=capacity_by_region.index,

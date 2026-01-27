@@ -225,6 +225,11 @@ def get_css() -> str:
             overflow: hidden;
         }
 
+        /* Hide Plotly modebar (camera/screenshot icon) */
+        .modebar {
+            display: none !important;
+        }
+
         /* Info/Warning/Error boxes */
         .stAlert {
             border-radius: 12px;

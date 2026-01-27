@@ -94,22 +94,25 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_equipment_orders(
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_year: Optional[int] = None,
+        end_year: Optional[int] = None,
         manufacturer: Optional[str] = None,
         vendor: Optional[str] = None,
         equipment_type: Optional[str] = None
     ) -> pd.DataFrame:
-        """Get equipment orders with optional filters."""
-        query = "SELECT * FROM equipment_orders WHERE 1=1"
+        """Get equipment orders with optional filters.
+
+        Uses po_year for date filtering since po_date is often NULL.
+        """
+        query = "SELECT * FROM equipment_orders WHERE po_year IS NOT NULL"
         params = []
 
-        if start_date:
-            query += " AND po_date >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND po_date <= ?"
-            params.append(end_date)
+        if start_year:
+            query += " AND po_year >= ?"
+            params.append(start_year)
+        if end_year:
+            query += " AND po_year <= ?"
+            params.append(end_year)
         if manufacturer and manufacturer != "All":
             query += " AND manufacturer = ?"
             params.append(manufacturer)
@@ -120,7 +123,7 @@ class DatabaseManager:
             query += " AND equipment_type = ?"
             params.append(equipment_type)
 
-        query += " ORDER BY po_date DESC"
+        query += " ORDER BY po_year DESC, po_quarter DESC"
 
         with get_connection() as conn:
             return pd.read_sql_query(query, conn, params=params)
@@ -128,22 +131,27 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_shipments(
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_year: Optional[int] = None,
+        end_year: Optional[int] = None,
         panel_maker: Optional[str] = None,
         technology: Optional[str] = None,
         application: Optional[str] = None
     ) -> pd.DataFrame:
-        """Get shipment data with optional filters."""
+        """Get shipment data with optional filters.
+
+        Note: date column contains period strings like '2016-Q1 2016' not actual dates.
+        Filtering is done by extracting the year from the date string.
+        """
         query = "SELECT * FROM shipments WHERE 1=1"
         params = []
 
-        if start_date:
-            query += " AND date >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND date <= ?"
-            params.append(end_date)
+        # Filter by year extracted from date string (first 4 chars)
+        if start_year:
+            query += " AND CAST(SUBSTR(date, 1, 4) AS INTEGER) >= ?"
+            params.append(start_year)
+        if end_year:
+            query += " AND CAST(SUBSTR(date, 1, 4) AS INTEGER) <= ?"
+            params.append(end_year)
         if panel_maker and panel_maker != "All":
             query += " AND panel_maker = ?"
             params.append(panel_maker)
@@ -395,8 +403,8 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_equipment_spend_by_vendor(
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        start_year: Optional[int] = None,
+        end_year: Optional[int] = None
     ) -> pd.DataFrame:
         """Get equipment spending aggregated by vendor."""
         query = """
@@ -406,16 +414,16 @@ class DatabaseManager:
                 SUM(units) as total_units,
                 COUNT(*) as order_count
             FROM equipment_orders
-            WHERE vendor IS NOT NULL
+            WHERE vendor IS NOT NULL AND po_year IS NOT NULL
         """
         params = []
 
-        if start_date:
-            query += " AND po_date >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND po_date <= ?"
-            params.append(end_date)
+        if start_year:
+            query += " AND po_year >= ?"
+            params.append(start_year)
+        if end_year:
+            query += " AND po_year <= ?"
+            params.append(end_year)
 
         query += " GROUP BY vendor ORDER BY total_spend DESC"
 
@@ -425,8 +433,8 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_shipments_by_application(
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        start_year: Optional[int] = None,
+        end_year: Optional[int] = None
     ) -> pd.DataFrame:
         """Get shipments aggregated by application."""
         query = """
@@ -440,12 +448,12 @@ class DatabaseManager:
         """
         params = []
 
-        if start_date:
-            query += " AND date >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND date <= ?"
-            params.append(end_date)
+        if start_year:
+            query += " AND CAST(SUBSTR(date, 1, 4) AS INTEGER) >= ?"
+            params.append(start_year)
+        if end_year:
+            query += " AND CAST(SUBSTR(date, 1, 4) AS INTEGER) <= ?"
+            params.append(end_year)
 
         query += " GROUP BY date, application ORDER BY date"
 

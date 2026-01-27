@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -64,27 +64,27 @@ with st.sidebar:
 
     st.divider()
 
-    st.markdown("### Date Range")
-    min_date, max_date = DatabaseManager.get_date_range()
-
+    st.markdown("### Year Range")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "Start",
-            value=date(2020, 1, 1),
-            key="supplier_start"
+        start_year = st.selectbox(
+            "Start Year",
+            options=list(range(2018, 2027)),
+            index=0,
+            key="supplier_start_year"
         )
     with col2:
-        end_date = st.date_input(
-            "End",
-            value=date.today(),
-            key="supplier_end"
+        end_year = st.selectbox(
+            "End Year",
+            options=list(range(2018, 2027)),
+            index=8,  # Default to 2026
+            key="supplier_end_year"
         )
 
 # Load equipment orders data
 orders_df = DatabaseManager.get_equipment_orders(
-    start_date=start_date.strftime("%Y-%m-%d"),
-    end_date=end_date.strftime("%Y-%m-%d"),
+    start_year=start_year,
+    end_year=end_year,
     manufacturer=manufacturer,
     vendor=vendor,
     equipment_type=equipment_type
@@ -131,8 +131,9 @@ with tab1:
         with col1:
             st.markdown("#### Equipment Spend by Year")
 
-            orders_df['year'] = pd.to_datetime(orders_df['po_date']).dt.year
-            spend_by_year = orders_df.groupby('year')['amount_usd'].sum().reset_index()
+            # Use po_year column directly since po_date is often NULL
+            spend_by_year = orders_df.groupby('po_year')['amount_usd'].sum().reset_index()
+            spend_by_year.columns = ['year', 'amount_usd']
 
             fig = px.bar(
                 spend_by_year,
@@ -176,15 +177,17 @@ with tab1:
         st.divider()
 
         # Spend over time trend
-        st.markdown("#### Equipment Spending Trend")
+        st.markdown("#### Equipment Spending Trend by Quarter")
 
-        orders_df['po_month'] = pd.to_datetime(orders_df['po_date']).dt.to_period('M').astype(str)
-        monthly_spend = orders_df.groupby('po_month')['amount_usd'].sum().reset_index()
+        # Use po_year and po_quarter for trend since po_date is often NULL
+        quarterly_spend = orders_df.groupby(['po_year', 'po_quarter'])['amount_usd'].sum().reset_index()
+        quarterly_spend = quarterly_spend.sort_values(['po_year', 'po_quarter'])
+        quarterly_spend['period'] = quarterly_spend['po_year'].astype(str) + ' ' + quarterly_spend['po_quarter'].fillna('')
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=monthly_spend['po_month'],
-            y=monthly_spend['amount_usd'],
+            x=quarterly_spend['period'],
+            y=quarterly_spend['amount_usd'],
             mode='lines+markers',
             fill='tozeroy',
             line=dict(color=theme['color_discrete_sequence'][0], width=2),
@@ -193,7 +196,7 @@ with tab1:
         ))
         fig.update_layout(
             **theme['layout'],
-            xaxis_title="Month",
+            xaxis_title="Quarter",
             yaxis_title="Spend (USD)",
             height=350,
             showlegend=False
@@ -211,8 +214,8 @@ with tab2:
         st.markdown("#### Top Vendors by Total Spend")
 
         vendor_spend = DatabaseManager.get_equipment_spend_by_vendor(
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d")
+            start_year=start_year,
+            end_year=end_year
         )
 
         if len(vendor_spend) > 0:

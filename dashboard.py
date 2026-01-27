@@ -123,10 +123,11 @@ def main():
         st.markdown("### Navigation")
         st.markdown("""
         Use the pages in the sidebar to navigate:
-        - **Factories** - Factory database & utilization
-        - **Suppliers** - Equipment vendors & orders
-        - **Intel** - Market insights & analysis
+        - **Dashboard** - Overview & key metrics
         - **News** - Industry news & updates
+        - **Suppliers** - Equipment vendors & orders
+        - **Factories** - Factory database & utilization
+        - **Market Intelligence** - Insights & analysis
         - **Financials** - Company financials
         """)
 
