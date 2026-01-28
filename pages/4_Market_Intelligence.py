@@ -118,8 +118,13 @@ with tab1:
             st.metric("Total Revenue", format_currency(total_revenue))
 
         with col3:
-            # Filter valid panel makers
-            valid_makers = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+            # Filter valid panel makers (exclude ALL and /Others aggregates)
+            valid_makers = shipments_df[
+                shipments_df['panel_maker'].notna() &
+                (shipments_df['panel_maker'] != '') &
+                (shipments_df['panel_maker'] != 'ALL') &
+                (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+            ]
             unique_makers = valid_makers['panel_maker'].nunique()
             st.metric("Panel Makers", format_with_commas(unique_makers))
 
@@ -314,8 +319,13 @@ with tab2:
         # Panel Maker Market Share Section
         st.markdown("##### Panel Maker Market Share")
 
-        # Filter valid panel makers
-        maker_df = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+        # Filter valid panel makers (exclude ALL and /Others aggregates)
+        maker_df = shipments_df[
+            shipments_df['panel_maker'].notna() &
+            (shipments_df['panel_maker'] != '') &
+            (shipments_df['panel_maker'] != 'ALL') &
+            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+        ]
 
         maker_share = maker_df.groupby('panel_maker').agg({
             'revenue_m': 'sum',
@@ -352,10 +362,14 @@ with tab2:
         # Panel Maker by Technology breakdown
         st.markdown("##### Panel Maker Portfolio by Technology")
 
-        # Filter for valid data
+        # Filter for valid data (exclude ALL and /Others aggregates)
         maker_tech_df = shipments_df[
-            shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '') &
-            shipments_df['technology'].notna() & (shipments_df['technology'] != '')
+            shipments_df['panel_maker'].notna() &
+            (shipments_df['panel_maker'] != '') &
+            (shipments_df['panel_maker'] != 'ALL') &
+            (~shipments_df['panel_maker'].str.contains('/Others', na=False)) &
+            shipments_df['technology'].notna() &
+            (shipments_df['technology'] != '')
         ]
         maker_tech = maker_tech_df.groupby(['panel_maker', 'technology'])['revenue_m'].sum().reset_index()
         top_makers_list = maker_share.head(8)['panel_maker'].tolist()
@@ -590,8 +604,13 @@ with tab4:
     if len(shipments_df) > 0:
         st.markdown("#### Panel Maker Market Share")
 
-        # Filter valid panel makers
-        maker_data = shipments_df[shipments_df['panel_maker'].notna() & (shipments_df['panel_maker'] != '')]
+        # Filter valid panel makers (exclude ALL and /Others aggregates)
+        maker_data = shipments_df[
+            shipments_df['panel_maker'].notna() &
+            (shipments_df['panel_maker'] != '') &
+            (shipments_df['panel_maker'] != 'ALL') &
+            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+        ]
         maker_revenue = maker_data.groupby('panel_maker')['revenue_m'].sum().sort_values(ascending=False)
         total_revenue = maker_revenue.sum()
 
