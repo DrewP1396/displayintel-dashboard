@@ -459,3 +459,80 @@ class DatabaseManager:
 
         with get_connection() as conn:
             return pd.read_sql_query(query, conn, params=params)
+
+
+# =============================================================================
+# Formatting Functions
+# =============================================================================
+
+def format_currency(value):
+    """Format currency with $ and M/B suffix."""
+    if pd.isna(value) or value == 0:
+        return "$0"
+    if value >= 1e9:
+        return f"${value/1e9:.1f}B"
+    elif value >= 1e6:
+        return f"${value/1e6:.1f}M"
+    elif value >= 1e3:
+        return f"${value/1e3:.1f}K"
+    else:
+        return f"${value:.0f}"
+
+
+def format_integer(value):
+    """Format integer with commas."""
+    if pd.isna(value):
+        return "-"
+    return f"{int(value):,}"
+
+
+def format_units(value):
+    """Format units (show - for null/zero)."""
+    if pd.isna(value) or value == 0:
+        return "-"
+    return format_integer(value)
+
+
+def format_percent(value):
+    """Format as percentage."""
+    if pd.isna(value):
+        return "-"
+    return f"{value:.1f}%"
+
+
+# Process step mapping for OLED fab equipment
+PROCESS_STEP_MAPPING = {
+    'AKT': 1, 'Glass': 1, 'Cleaning': 1,
+    'CVD': 2, 'Sputtering': 2, 'PVD': 2, 'Etch': 2, 'Dry Etch': 2,
+    'Exposure': 2, 'Developer': 2, 'Photolithography': 2, 'Implant': 2,
+    'CMP': 3, 'Planarization': 3,
+    'Evaporation': 4, 'OLED': 4, 'RGB': 4, 'Organic': 4,
+    'Encapsulation': 5, 'Encap': 5, 'TFE': 5, 'Getter': 5,
+    'Module': 6, 'Bonding': 6, 'Touch': 6, 'Polarizer': 6,
+    'AOI': 7, 'Test': 7, 'Inspection': 7,
+    'Automation': 8, 'Material Handling': 8, 'Others': 8
+}
+
+PROCESS_STEP_NAMES = {
+    1: 'Substrate/Glass',
+    2: 'Backplane/TFT',
+    3: 'Planarization',
+    4: 'OLED Deposition',
+    5: 'Encapsulation',
+    6: 'Module Assembly',
+    7: 'Test/Inspection',
+    8: 'Automation/Other'
+}
+
+
+def get_process_step(equipment_type):
+    """Get process step number for equipment type."""
+    if not equipment_type:
+        return 8
+    return PROCESS_STEP_MAPPING.get(equipment_type, 8)
+
+
+def get_process_step_name(equipment_type):
+    """Get process step name for equipment type."""
+    step_num = get_process_step(equipment_type)
+    return PROCESS_STEP_NAMES.get(step_num, 'Automation/Other')

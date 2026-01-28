@@ -13,8 +13,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_currency, format_with_commas, format_percent
-from utils.database import DatabaseManager
+from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_with_commas
+from utils.database import (
+    DatabaseManager,
+    format_currency,
+    format_integer,
+    format_units,
+    get_process_step,
+    get_process_step_name,
+    PROCESS_STEP_NAMES
+)
 from utils.exports import create_download_buttons
 
 # Page config
@@ -177,6 +185,39 @@ with tab1:
                 apply_chart_theme(fig)
                 fig.update_layout(height=350)
                 st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # Spend by Process Step
+        st.markdown("#### Spend by Process Step")
+
+        # Add process step to data
+        orders_with_step = orders_df.copy()
+        orders_with_step['process_step'] = orders_with_step['equipment_type'].apply(get_process_step_name)
+
+        step_spend = orders_with_step.groupby('process_step')['amount_usd'].sum().reset_index()
+        step_spend.columns = ['Process Step', 'Total Spend']
+        step_spend = step_spend.sort_values('Total Spend', ascending=True)
+
+        if len(step_spend) > 0:
+            fig = px.bar(
+                step_spend,
+                x='Total Spend',
+                y='Process Step',
+                orientation='h'
+            )
+            fig.update_traces(
+                marker_color=colors[1],
+                hovertemplate='%{y}<br>Spend: $%{x:,.0f}<extra></extra>'
+            )
+            apply_chart_theme(fig)
+            fig.update_layout(
+                showlegend=False,
+                xaxis_title="Total Spend (USD)",
+                yaxis_title="",
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
 
@@ -343,15 +384,19 @@ with tab3:
     if len(orders_df) > 0:
         st.markdown("#### Equipment Purchase Orders")
 
+        # Add process step column
+        display_df = orders_df.copy()
+        display_df['process_step'] = display_df['equipment_type'].apply(get_process_step_name)
+
         # Display columns - use po_year instead of po_date
         display_cols = [
             'po_year', 'po_quarter', 'manufacturer', 'factory', 'vendor',
-            'equipment_type', 'tool_category', 'units', 'amount_usd'
+            'equipment_type', 'process_step', 'units', 'amount_usd'
         ]
-        available_cols = [c for c in display_cols if c in orders_df.columns]
+        available_cols = [c for c in display_cols if c in display_df.columns]
 
         st.dataframe(
-            orders_df[available_cols].head(500),
+            display_df[available_cols].head(500),
             use_container_width=True,
             hide_index=True,
             height=500,
@@ -362,7 +407,7 @@ with tab3:
                 "factory": st.column_config.TextColumn("Factory", width="medium"),
                 "vendor": st.column_config.TextColumn("Vendor", width="medium"),
                 "equipment_type": st.column_config.TextColumn("Equipment", width="medium"),
-                "tool_category": st.column_config.TextColumn("Category", width="small"),
+                "process_step": st.column_config.TextColumn("Process Step", width="medium"),
                 "units": st.column_config.NumberColumn("Units", format="%,.0f"),
                 "amount_usd": st.column_config.NumberColumn("Amount (USD)", format="$%,.0f")
             }
