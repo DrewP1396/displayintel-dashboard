@@ -112,12 +112,16 @@ colors = theme['color_discrete_sequence']
 # Tab 1: Factory Database
 with tab1:
     # Load factory data
-    factories_df = DatabaseManager.get_factories(
-        manufacturer=manufacturer,
-        technology=technology,
-        region=region,
-        status=status
-    )
+    try:
+        factories_df = DatabaseManager.get_factories(
+            manufacturer=manufacturer,
+            technology=technology,
+            region=region,
+            status=status
+        )
+    except Exception as e:
+        st.error(f"Error loading factory data: {str(e)}")
+        st.stop()
 
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -235,11 +239,15 @@ with tab1:
 # Tab 2: Utilization Analysis
 with tab2:
     # Load utilization data
-    util_df = DatabaseManager.get_utilization(
-        start_date=start_date.strftime("%Y-%m-%d"),
-        end_date=end_date.strftime("%Y-%m-%d"),
-        manufacturer=manufacturer if manufacturer != "All" else None
-    )
+    try:
+        util_df = DatabaseManager.get_utilization(
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+            manufacturer=manufacturer if manufacturer != "All" else None
+        )
+    except Exception as e:
+        st.error(f"Error loading utilization data: {str(e)}")
+        st.stop()
 
     if len(util_df) > 0:
         # Summary metrics
@@ -374,10 +382,14 @@ with tab2:
 # Tab 3: Capacity Overview
 with tab3:
     # Load utilization data for capacity analysis
-    util_df = DatabaseManager.get_utilization(
-        start_date=start_date.strftime("%Y-%m-%d"),
-        end_date=end_date.strftime("%Y-%m-%d")
-    )
+    try:
+        util_df = DatabaseManager.get_utilization(
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
+        )
+    except Exception as e:
+        st.error(f"Error loading capacity data: {str(e)}")
+        st.stop()
 
     if len(util_df) > 0:
         st.markdown("#### Total Industry Capacity Over Time")

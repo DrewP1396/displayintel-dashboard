@@ -133,6 +133,16 @@ def main():
 
         st.divider()
 
+        # Quick Filters
+        st.markdown("### Quick Filters")
+        col1, col2 = st.columns(2)
+        with col1:
+            start_year = st.selectbox("From", options=list(range(2018, 2027)), index=0, key="dash_start_year")
+        with col2:
+            end_year = st.selectbox("To", options=list(range(2018, 2027)), index=8, key="dash_end_year")
+
+        st.divider()
+
         # Data timestamp
         st.markdown("### Data Status")
         st.caption(f"Last updated: {datetime.now().strftime('%B %d, %Y')}")
@@ -152,6 +162,9 @@ def main():
     """, unsafe_allow_html=True)
 
     # Load summary stats
+    # NOTE: get_summary_stats() does not currently support year filtering.
+    # The sidebar year filters (start_year, end_year) are available for future use
+    # when this function is updated to accept year parameters.
     try:
         stats = DatabaseManager.get_summary_stats()
 

@@ -104,9 +104,25 @@ with st.sidebar:
     factories_list = ["All"] + sorted(orders_df[orders_df['factory'].notna() & (orders_df['factory'] != '')]['factory'].unique().tolist())
     factory = st.selectbox("Factory", options=factories_list, key="supplier_factory")
 
+    # Process step filter
+    process_steps_list = ["All"] + [f"{k}: {v}" for k, v in sorted(PROCESS_STEP_NAMES.items())]
+    process_step_filter = st.selectbox("Process Step", options=process_steps_list, key="supplier_process_step")
+
 # Apply factory filter
 if factory != "All":
     orders_df = orders_df[orders_df['factory'] == factory]
+
+# Apply process step filter
+if process_step_filter != "All":
+    step_num = int(process_step_filter.split(":")[0])
+    orders_df['_process_step'] = orders_df['equipment_type'].apply(get_process_step)
+    orders_df = orders_df[orders_df['_process_step'] == step_num]
+    orders_df = orders_df.drop(columns=['_process_step'])
+
+# Add process_step column once (reused in Tab 1 and Tab 3)
+if len(orders_df) > 0:
+    orders_df = orders_df.copy()  # Copy once here to avoid SettingWithCopyWarning
+    orders_df['process_step'] = orders_df['equipment_type'].apply(get_process_step_name)
 
 # Get theme colors
 theme = get_plotly_theme()
@@ -201,11 +217,8 @@ with tab1:
         # Spend by Process Step
         st.markdown("#### Spend by Process Step")
 
-        # Add process step to data
-        orders_with_step = orders_df.copy()
-        orders_with_step['process_step'] = orders_with_step['equipment_type'].apply(get_process_step_name)
-
-        step_spend = orders_with_step.groupby('process_step')['amount_usd'].sum().reset_index()
+        # process_step column already added after data load (performance optimization)
+        step_spend = orders_df.groupby('process_step')['amount_usd'].sum().reset_index()
         step_spend.columns = ['Process Step', 'Total Spend']
         step_spend = step_spend.sort_values('Total Spend', ascending=True)
 
@@ -311,11 +324,11 @@ with tab2:
             # Vendor metrics table
             st.markdown("#### Vendor Performance Metrics")
 
-            vendor_display = vendor_spend.copy()
-            vendor_display['avg_order_value'] = vendor_display['total_spend'] / vendor_display['order_count']
+            # Add calculated column directly (no copy needed - vendor_spend not used raw after this)
+            vendor_spend['avg_order_value'] = vendor_spend['total_spend'] / vendor_spend['order_count']
 
             st.dataframe(
-                vendor_display.head(20),
+                vendor_spend.head(20),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -394,19 +407,17 @@ with tab3:
     if len(orders_df) > 0:
         st.markdown("#### Equipment Purchase Orders")
 
-        # Add process step column
-        display_df = orders_df.copy()
-        display_df['process_step'] = display_df['equipment_type'].apply(get_process_step_name)
+        # process_step column already added after data load (performance optimization)
 
         # Display columns - use po_year instead of po_date
         display_cols = [
             'po_year', 'po_quarter', 'manufacturer', 'factory', 'vendor',
             'equipment_type', 'process_step', 'units', 'amount_usd'
         ]
-        available_cols = [c for c in display_cols if c in display_df.columns]
+        available_cols = [c for c in display_cols if c in orders_df.columns]
 
         st.dataframe(
-            display_df[available_cols].head(500),
+            orders_df[available_cols].head(500),
             use_container_width=True,
             hide_index=True,
             height=500,

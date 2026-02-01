@@ -85,12 +85,16 @@ with st.sidebar:
     )
 
 # Load news data
-news_df = DatabaseManager.get_news(
-    start_date=start_date.strftime("%Y-%m-%d"),
-    end_date=end_date.strftime("%Y-%m-%d"),
-    category=category,
-    impact_level=impact
-)
+try:
+    news_df = DatabaseManager.get_news(
+        start_date=start_date.strftime("%Y-%m-%d"),
+        end_date=end_date.strftime("%Y-%m-%d"),
+        category=category,
+        impact_level=impact
+    )
+except Exception as e:
+    st.error(f"Error loading news data: {str(e)}")
+    st.stop()
 
 theme = get_plotly_theme()
 

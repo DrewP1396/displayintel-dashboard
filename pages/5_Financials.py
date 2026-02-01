@@ -68,11 +68,15 @@ with st.sidebar:
         )
 
 # Load financial data
-financials_df = DatabaseManager.get_financials(
-    start_date=start_date.strftime("%Y-%m-%d"),
-    end_date=end_date.strftime("%Y-%m-%d"),
-    manufacturer=manufacturer
-)
+try:
+    financials_df = DatabaseManager.get_financials(
+        start_date=start_date.strftime("%Y-%m-%d"),
+        end_date=end_date.strftime("%Y-%m-%d"),
+        manufacturer=manufacturer
+    )
+except Exception as e:
+    st.error(f"Error loading financial data: {str(e)}")
+    st.stop()
 
 # Get theme colors
 theme = get_plotly_theme()

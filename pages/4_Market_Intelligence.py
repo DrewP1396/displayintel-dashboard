@@ -94,6 +94,21 @@ shipments_df = DatabaseManager.get_shipments(
 theme = get_plotly_theme()
 colors = theme['color_discrete_sequence']
 
+# Pre-compute common filtered dataframes once (performance optimization)
+# These are reused across multiple tabs
+if len(shipments_df) > 0:
+    # Valid panel makers (exclude ALL and /Others aggregates) - used in Tab 1, 2, 4
+    valid_makers_df = shipments_df[
+        shipments_df['panel_maker'].notna() &
+        (shipments_df['panel_maker'] != '') &
+        (shipments_df['panel_maker'] != 'ALL') &
+        (~shipments_df['panel_maker'].str.contains('/Others', na=False))
+    ]
+    # Valid technologies - used in Tab 1, 2
+    valid_tech_df = shipments_df[shipments_df['technology'].notna() & (shipments_df['technology'] != '')]
+    # Valid applications - used in Tab 1, 2, 3
+    valid_apps_df = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
+
 # Main content tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Competitive Analysis", "Application Analysis", "Panel Makers", "Detailed Data"])
 
@@ -118,19 +133,13 @@ with tab1:
             st.metric("Total Revenue", format_currency(total_revenue))
 
         with col3:
-            # Filter valid panel makers (exclude ALL and /Others aggregates)
-            valid_makers = shipments_df[
-                shipments_df['panel_maker'].notna() &
-                (shipments_df['panel_maker'] != '') &
-                (shipments_df['panel_maker'] != 'ALL') &
-                (~shipments_df['panel_maker'].str.contains('/Others', na=False))
-            ]
-            unique_makers = valid_makers['panel_maker'].nunique()
+            # Use pre-computed valid_makers_df (performance optimization)
+            unique_makers = valid_makers_df['panel_maker'].nunique()
             st.metric("Panel Makers", format_with_commas(unique_makers))
 
         with col4:
-            valid_apps = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
-            unique_apps = valid_apps['application'].nunique()
+            # Use pre-computed valid_apps_df (performance optimization)
+            unique_apps = valid_apps_df['application'].nunique()
             st.metric("Applications", format_with_commas(unique_apps))
 
         st.divider()
@@ -189,9 +198,8 @@ with tab1:
         with col1:
             st.markdown("#### Revenue by Application")
 
-            # Filter valid applications
-            valid_apps = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
-            app_revenue = valid_apps.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
+            # Use pre-computed valid_apps_df (performance optimization)
+            app_revenue = valid_apps_df.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
 
             if len(app_revenue) > 0:
                 fig = px.pie(
@@ -208,9 +216,8 @@ with tab1:
         with col2:
             st.markdown("#### Units by Technology")
 
-            # Filter valid technologies
-            valid_tech = shipments_df[shipments_df['technology'].notna() & (shipments_df['technology'] != '')]
-            tech_units = valid_tech.groupby('technology')['units_k'].sum()
+            # Use pre-computed valid_tech_df (performance optimization)
+            tech_units = valid_tech_df.groupby('technology')['units_k'].sum()
 
             if len(tech_units) > 0:
                 fig = px.pie(
@@ -241,8 +248,8 @@ with tab2:
         # Technology Breakdown Section
         st.markdown("##### Technology Breakdown: LCD vs OLED")
 
-        # Filter valid technologies
-        tech_df = shipments_df[shipments_df['technology'].notna() & (shipments_df['technology'] != '')]
+        # Use pre-computed valid_tech_df (performance optimization)
+        tech_df = valid_tech_df
 
         col1, col2 = st.columns(2)
 
@@ -319,13 +326,8 @@ with tab2:
         # Panel Maker Market Share Section
         st.markdown("##### Panel Maker Market Share")
 
-        # Filter valid panel makers (exclude ALL and /Others aggregates)
-        maker_df = shipments_df[
-            shipments_df['panel_maker'].notna() &
-            (shipments_df['panel_maker'] != '') &
-            (shipments_df['panel_maker'] != 'ALL') &
-            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
-        ]
+        # Use pre-computed valid_makers_df (performance optimization)
+        maker_df = valid_makers_df
 
         maker_share = maker_df.groupby('panel_maker').agg({
             'revenue_m': 'sum',
@@ -362,14 +364,10 @@ with tab2:
         # Panel Maker by Technology breakdown
         st.markdown("##### Panel Maker Portfolio by Technology")
 
-        # Filter for valid data (exclude ALL and /Others aggregates)
-        maker_tech_df = shipments_df[
-            shipments_df['panel_maker'].notna() &
-            (shipments_df['panel_maker'] != '') &
-            (shipments_df['panel_maker'] != 'ALL') &
-            (~shipments_df['panel_maker'].str.contains('/Others', na=False)) &
-            shipments_df['technology'].notna() &
-            (shipments_df['technology'] != '')
+        # Use pre-computed valid_makers_df filtered by valid technology (performance optimization)
+        maker_tech_df = valid_makers_df[
+            valid_makers_df['technology'].notna() &
+            (valid_makers_df['technology'] != '')
         ]
         maker_tech = maker_tech_df.groupby(['panel_maker', 'technology'])['revenue_m'].sum().reset_index()
         top_makers_list = maker_share.head(8)['panel_maker'].tolist()
@@ -400,8 +398,8 @@ with tab2:
         # Application Trends Section
         st.markdown("##### Application Market Trends")
 
-        # Filter valid applications
-        app_df = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
+        # Use pre-computed valid_apps_df (performance optimization)
+        app_df = valid_apps_df
 
         col1, col2 = st.columns(2)
 
@@ -516,8 +514,8 @@ with tab3:
     if len(shipments_df) > 0:
         st.markdown("#### Application Performance Over Time")
 
-        # Filter valid applications
-        app_data = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
+        # Use pre-computed valid_apps_df (performance optimization)
+        app_data = valid_apps_df
         app_ts = app_data[~app_data['date'].str.contains('ALL', na=False)].copy()
         app_ts['period'] = app_ts['date'].str.split(' ').str[0]
         app_monthly = app_ts.groupby(['period', 'application']).agg({
@@ -604,13 +602,8 @@ with tab4:
     if len(shipments_df) > 0:
         st.markdown("#### Panel Maker Market Share")
 
-        # Filter valid panel makers (exclude ALL and /Others aggregates)
-        maker_data = shipments_df[
-            shipments_df['panel_maker'].notna() &
-            (shipments_df['panel_maker'] != '') &
-            (shipments_df['panel_maker'] != 'ALL') &
-            (~shipments_df['panel_maker'].str.contains('/Others', na=False))
-        ]
+        # Use pre-computed valid_makers_df (performance optimization)
+        maker_data = valid_makers_df
         maker_revenue = maker_data.groupby('panel_maker')['revenue_m'].sum().sort_values(ascending=False)
         total_revenue = maker_revenue.sum()
 
