@@ -98,6 +98,16 @@ orders_df = DatabaseManager.get_equipment_orders(
     equipment_type=equipment_type
 )
 
+# Factory filter in sidebar (after loading data to get factory options)
+with st.sidebar:
+    st.divider()
+    factories_list = ["All"] + sorted(orders_df[orders_df['factory'].notna() & (orders_df['factory'] != '')]['factory'].unique().tolist())
+    factory = st.selectbox("Factory", options=factories_list, key="supplier_factory")
+
+# Apply factory filter
+if factory != "All":
+    orders_df = orders_df[orders_df['factory'] == factory]
+
 # Get theme colors
 theme = get_plotly_theme()
 colors = theme['color_discrete_sequence']

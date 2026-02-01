@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.styling import get_css
-from utils.database import DatabaseManager
+from utils.database import DatabaseManager, format_integer, format_percent
 
 # Page configuration
 st.set_page_config(
@@ -161,35 +161,35 @@ def main():
         with col1:
             st.metric(
                 label="Total Factories",
-                value=f"{stats['total_factories']:,}",
-                delta=f"{stats['active_factories']} operating"
+                value=format_integer(stats['total_factories']),
+                delta=f"{format_integer(stats['active_factories'])} operating"
             )
 
         with col2:
             st.metric(
                 label="Manufacturers",
-                value=f"{stats['manufacturers']:,}",
+                value=format_integer(stats['manufacturers']),
                 delta=None
             )
 
         with col3:
             st.metric(
                 label="Avg Utilization",
-                value=f"{stats['avg_utilization']}%",
+                value=format_percent(stats['avg_utilization']),
                 delta=None
             )
 
         with col4:
             st.metric(
                 label="Equipment Orders",
-                value=f"{stats['equipment_orders']:,}",
+                value=format_integer(stats['equipment_orders']),
                 delta=None
             )
 
         with col5:
             st.metric(
                 label="Shipment Records",
-                value=f"{stats['shipments']:,}",
+                value=format_integer(stats['shipments']),
                 delta=None
             )
 
@@ -244,12 +244,12 @@ def main():
             coverage_data = pd.DataFrame({
                 'Category': ['Factories', 'Utilization Records', 'Equipment Orders', 'Shipment Records'],
                 'Records': [
-                    f"{stats['total_factories']:,}",
-                    f"{stats['utilization_records']:,}",
-                    f"{stats['equipment_orders']:,}",
-                    f"{stats['shipments']:,}"
+                    format_integer(stats['total_factories']),
+                    format_integer(stats['utilization_records']),
+                    format_integer(stats['equipment_orders']),
+                    format_integer(stats['shipments'])
                 ],
-                'Status': ['✓ Active', '✓ Active', '✓ Active', '✓ Active']
+                'Status': ['Active', 'Active', 'Active', 'Active']
             })
 
             st.dataframe(

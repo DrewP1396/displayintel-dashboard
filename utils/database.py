@@ -502,15 +502,42 @@ def format_percent(value):
 
 # Process step mapping for OLED fab equipment
 PROCESS_STEP_MAPPING = {
+    # Step 1: Substrate/Glass
     'AKT': 1, 'Glass': 1, 'Cleaning': 1,
+    'Glass Half Cut': 1, 'LLO': 1, 'Laser Cell Cutting': 1,
+    'Laser Shape Cutting': 1, 'Scriber': 1, 'Wet Clean': 1,
+    # Step 2: Backplane/TFT
     'CVD': 2, 'Sputtering': 2, 'PVD': 2, 'Etch': 2, 'Dry Etch': 2,
     'Exposure': 2, 'Developer': 2, 'Photolithography': 2, 'Implant': 2,
+    'Coater': 2, 'Coater Developer': 2, 'Dry Strip': 2, 'ELA': 2,
+    'Furnace Activation Annealing': 2, 'ITO Furnace': 2, 'Laser CVD Repair': 2,
+    'Laser Drilling': 2, 'PI Coating': 2, 'PI Curing': 2,
+    'PVD ITO IGZO': 2, 'PVD SD Gate LS': 2, 'Wet Etch': 2, 'Wet Strip': 2,
+    # Step 3: Planarization
     'CMP': 3, 'Planarization': 3,
+    # Step 4: OLED Deposition
     'Evaporation': 4, 'OLED': 4, 'RGB': 4, 'Organic': 4,
+    'Evap RandD': 4, 'FMM VTE Source': 4, 'FMM VTE System': 4, 'IJP': 4,
+    'Open Mask VTE': 4, 'Open Mask VTE Source': 4, 'Other IJP': 4,
+    'Photo Patterned VTE': 4, 'Photo Patterned VTE Source': 4, 'Vacuum Alignment': 4,
+    # Step 5: Encapsulation
     'Encapsulation': 5, 'Encap': 5, 'TFE': 5, 'Getter': 5,
+    'ALD TFE': 5, 'Fill Dispense': 5, 'Glass Metal Encapsulation': 5,
+    'Inorganic TFE': 5, 'Organic TFE': 5,
+    # Step 6: Module Assembly
     'Module': 6, 'Bonding': 6, 'Touch': 6, 'Polarizer': 6,
+    'COF COP COG Bonding': 6, 'Cell Module Repair': 6,
+    'FOF FOG PCB Bonding': 6, 'Lamination Attach': 6,
+    # Step 7: Test/Inspection
     'AOI': 7, 'Test': 7, 'Inspection': 7,
-    'Automation': 8, 'Material Handling': 8, 'Others': 8
+    'Array Test': 7, 'Auto Cell Aging Test': 7, 'Auto Final Test': 7,
+    'Auto Module Test': 7, 'CD Overlay': 7, 'Film Thickness': 7,
+    'Film Thickness Cluster': 7, 'Film Thickness Stand Alone': 7,
+    'Multi Time Program': 7, 'OS Tester': 7, 'SEM': 7, 'SLA': 7,
+    'Total Pitch': 7, 'Zap Repair': 7,
+    # Step 8: Automation/Other
+    'Automation': 8, 'Material Handling': 8, 'Others': 8,
+    'Bubble PI Repair': 8
 }
 
 PROCESS_STEP_NAMES = {
