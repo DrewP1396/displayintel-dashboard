@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme
+from utils.styling import get_css, get_plotly_theme, format_with_commas
 from utils.database import DatabaseManager
 from utils.exports import create_download_buttons
 
@@ -109,21 +109,21 @@ if len(news_df) > 0:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Total Articles", len(news_df))
+        st.metric("Total Articles", format_with_commas(len(news_df)))
 
     with col2:
         high_impact = len(news_df[news_df['impact_level'] == 'High'])
-        st.metric("High Impact", high_impact)
+        st.metric("High Impact", format_with_commas(high_impact))
 
     with col3:
         unique_sources = news_df['source'].nunique()
-        st.metric("Sources", unique_sources)
+        st.metric("Sources", format_with_commas(unique_sources))
 
     with col4:
         # Recent 7 days
         recent_mask = pd.to_datetime(news_df['published_date']) >= (datetime.now() - timedelta(days=7))
         recent_count = len(news_df[recent_mask])
-        st.metric("Last 7 Days", recent_count)
+        st.metric("Last 7 Days", format_with_commas(recent_count))
 
     st.divider()
 
