@@ -690,67 +690,27 @@ with tab1:
                     if product:
                         product_tags += f'<span style="background: #34C75915; color: #34C759; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.7rem; margin-right: 0.25rem;">{product}</span>'
 
+            # Build summary HTML
+            if summary_text:
+                summary_html = f'<p style="color: #515154; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.75rem; font-style: italic;">{summary_text[:300]}{"..." if len(summary_text) > 300 else ""}</p>'
+            else:
+                summary_html = '<p style="color: #86868B; font-size: 0.85rem; font-style: italic; margin-bottom: 0.75rem;">No summary available</p>'
+
             st.markdown(f"""
-            <div style="
-                background: white;
-                border: 1px solid #E5E5E7;
-                border-radius: 16px;
-                padding: 1.5rem;
-                margin-bottom: 1rem;
-                transition: box-shadow 0.2s ease;
-            ">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <span style="
-                            background: {sentiment_color}15;
-                            color: {sentiment_color};
-                            padding: 0.25rem 0.75rem;
-                            border-radius: 20px;
-                            font-size: 0.75rem;
-                            font-weight: 500;
-                        ">{row.get('sentiment', 'Neutral')}</span>
-                        <span style="
-                            background: #F5F5F7;
-                            color: #86868B;
-                            padding: 0.25rem 0.75rem;
-                            border-radius: 20px;
-                            font-size: 0.75rem;
-                        ">{row.get('category', 'General')}</span>
-                    </div>
-                    <span style="color: #86868B; font-size: 0.75rem;">{pub_date}</span>
-                </div>
-
-                <a href="{article_url}" target="_blank" style="text-decoration: none;">
-                    <h3 style="
-                        font-size: 1.15rem;
-                        font-weight: 600;
-                        color: #1D1D1F;
-                        margin-bottom: 0.5rem;
-                        line-height: 1.4;
-                        transition: color 0.2s ease;
-                    " onmouseover="this.style.color='#007AFF'" onmouseout="this.style.color='#1D1D1F'">{title_text}</h3>
-                </a>
-
-                <p style="color: #86868B; font-size: 0.8rem; margin-bottom: 0.75rem;">
-                    {row.get('source', 'Unknown')}
-                </p>
-
-                {'<p style="color: #515154; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.75rem; font-style: italic;">' + summary_text[:300] + ('...' if len(summary_text) > 300 else '') + '</p>' if summary_text else '<p style="color: #86868B; font-size: 0.85rem; font-style: italic; margin-bottom: 0.75rem;">No summary available</p>'}
-
-                <div style="display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
-                    {tags_html}
-                    {product_tags}
-                </div>
-
-                <div style="padding-top: 0.75rem; border-top: 1px solid #F5F5F7;">
-                    <a href="{article_url}" target="_blank" style="
-                        color: #007AFF;
-                        font-size: 0.85rem;
-                        font-weight: 500;
-                        text-decoration: none;
-                    ">Read Full Article →</a>
-                </div>
-            </div>
+<div style="background: white; border: 1px solid #E5E5E7; border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem;">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <span style="background: {sentiment_color}15; color: {sentiment_color}; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.75rem; font-weight: 500;">{row.get('sentiment', 'Neutral')}</span>
+            <span style="background: #F5F5F7; color: #86868B; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.75rem;">{row.get('category', 'General')}</span>
+        </div>
+        <span style="color: #86868B; font-size: 0.75rem;">{pub_date}</span>
+    </div>
+    <h3 style="font-size: 1.15rem; font-weight: 600; color: #1D1D1F; margin-bottom: 0.5rem; line-height: 1.4;"><a href="{article_url}" target="_blank" style="color: #1D1D1F; text-decoration: none;">{title_text}</a></h3>
+    <p style="color: #86868B; font-size: 0.8rem; margin-bottom: 0.75rem;">{row.get('source', 'Unknown')}</p>
+    {summary_html}
+    <div style="display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 0.75rem;">{tags_html}{product_tags}</div>
+    <div style="padding-top: 0.75rem; border-top: 1px solid #F5F5F7;"><a href="{article_url}" target="_blank" style="color: #007AFF; font-size: 0.85rem; font-weight: 500; text-decoration: none;">Read Full Article →</a></div>
+</div>
             """, unsafe_allow_html=True)
 
         # Pagination controls
