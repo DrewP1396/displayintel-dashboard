@@ -260,6 +260,57 @@ def get_headers():
     }
 
 
+def fetch_article_details(url: str) -> dict:
+    """
+    Fetch article page to get date, content, and summary.
+
+    Args:
+        url: Article URL
+
+    Returns:
+        Dict with 'date', 'content', 'summary' keys
+    """
+    result = {'date': None, 'content': None, 'summary': None}
+
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            return result
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Extract date - look for date patterns
+        for el in soup.select('div.info-text, span.dated, em.dated, time, .article-date, .view-date, em'):
+            text = el.get_text(strip=True)
+            match = re.search(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', text)
+            if match:
+                result['date'] = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+                break
+
+        # Extract content
+        for sel in ['#article-view-content-div', '.article-body', '.article-content', 'article', 'main']:
+            el = soup.select_one(sel)
+            if el:
+                for unwanted in el.select('script, style, nav, aside'):
+                    unwanted.decompose()
+                text = el.get_text(separator=' ', strip=True)
+                if len(text) > 100:
+                    result['content'] = text[:3000]
+                    break
+
+        # Generate summary from content
+        if result['content']:
+            sentences = re.split(r'(?<=[.!?])\s+', result['content'])
+            summary_sentences = [s.strip() for s in sentences if 40 < len(s.strip()) < 300][:2]
+            if summary_sentences:
+                result['summary'] = ' '.join(summary_sentences)
+
+    except Exception:
+        pass
+
+    return result
+
+
 def scrape_the_elec() -> list:
     """
     Scrape The Elec (thelec.net) for display industry news.
@@ -308,26 +359,16 @@ def scrape_the_elec() -> list:
                     else:
                         article_url = href
 
-                    # Find parent element to get more context
-                    parent = link.find_parent(['li', 'div'])
-                    summary = ""
-                    pub_date = date.today().isoformat()
-
-                    if parent:
-                        # Look for summary text
-                        summary_el = parent.select_one('p, .summary, .desc')
-                        if summary_el and summary_el != link:
-                            summary = summary_el.get_text(strip=True)
-
-                        # Look for date
-                        date_el = parent.select_one('em, .date, time, span.dated')
-                        if date_el:
-                            pub_date = parse_date(date_el.get_text(strip=True))
-
                     # The Elec is focused on display/semiconductor, so most articles are relevant
                     # But still apply filter for non-display content
-                    if not is_display_relevant(title, summary):
+                    if not is_display_relevant(title, ""):
                         continue
+
+                    # Fetch article details (date, content, summary)
+                    details = fetch_article_details(article_url)
+                    pub_date = details['date'] or date.today().isoformat()
+                    summary = details['summary']
+                    content = details['content'] or ""
 
                     articles.append({
                         'title': title,
@@ -336,11 +377,15 @@ def scrape_the_elec() -> list:
                         'article_url': article_url,
                         'published_date': pub_date,
                         'summary': summary[:500] if summary else None,
-                        'suppliers_mentioned': extract_suppliers_from_text(f"{title} {summary}"),
-                        'technologies_mentioned': extract_technologies_from_text(f"{title} {summary}"),
-                        'products_mentioned': extract_products_from_text(f"{title} {summary}"),
-                        'category': categorize_article(title, summary)
+                        'full_text': content,
+                        'suppliers_mentioned': extract_suppliers_from_text(f"{title} {content}"),
+                        'technologies_mentioned': extract_technologies_from_text(f"{title} {content}"),
+                        'products_mentioned': extract_products_from_text(f"{title} {content}"),
+                        'category': categorize_article(title, content),
+                        'sentiment': analyze_sentiment(title, content)
                     })
+
+                    time.sleep(0.2)  # Rate limiting
 
                 except Exception:
                     continue
@@ -553,9 +598,9 @@ def save_articles_to_db(articles: list) -> tuple:
             conn.execute("""
                 INSERT INTO news (
                     title, source, source_url, article_url, published_date,
-                    summary, suppliers_mentioned, technologies_mentioned,
-                    products_mentioned, category, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, full_text, suppliers_mentioned, technologies_mentioned,
+                    products_mentioned, category, sentiment, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 article['title'],
                 article['source'],
@@ -563,10 +608,12 @@ def save_articles_to_db(articles: list) -> tuple:
                 article['article_url'],
                 article.get('published_date'),
                 article.get('summary'),
+                article.get('full_text'),
                 article.get('suppliers_mentioned'),
                 article.get('technologies_mentioned'),
                 article.get('products_mentioned'),
                 article.get('category'),
+                article.get('sentiment'),
                 datetime.now().isoformat()
             ))
             saved += 1
