@@ -39,7 +39,7 @@ DB_PATH = Path(__file__).parent.parent / "displayintel.db"
 # Constants
 # =============================================================================
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
 DAILY_LIMIT = 1500
 WARNING_THRESHOLD = 1400
 
