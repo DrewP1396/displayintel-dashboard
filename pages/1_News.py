@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.styling import get_css, get_plotly_theme
 from utils.database import format_integer
-from utils.news_scraper import scrape_all_korea_sources
+from utils.news_scraper import scrape_all_korea_sources, update_all_articles_with_ai, analyze_sentiment
 
 # Page config
 st.set_page_config(
@@ -547,6 +547,27 @@ with tab1:
 
         st.caption("Sources: The Elec, Display Daily, Korea Times")
 
+        # AI Summary generation
+        st.markdown("**AI Processing**")
+        api_key = st.text_input(
+            "Anthropic API Key",
+            type="password",
+            placeholder="sk-ant-...",
+            key="anthropic_key",
+            help="Required for AI summaries"
+        )
+
+        if st.button("Generate AI Summaries", use_container_width=True):
+            if not api_key:
+                st.warning("Enter API key above")
+            else:
+                with st.spinner("Generating summaries..."):
+                    results = update_all_articles_with_ai(api_key)
+                st.success(f"Updated {results['sentiments_updated']} articles")
+                if results['summaries_generated'] > 0:
+                    st.info(f"Generated {results['summaries_generated']} AI summaries")
+                st.rerun()
+
         st.divider()
 
         # Insert sample data button
@@ -656,6 +677,19 @@ with tab1:
                         tags_html += f'<span style="background: #5856D615; color: #5856D6; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.7rem; margin-right: 0.25rem;">{tech}</span>'
 
             # Article card
+            # Get article URL for link
+            article_url = row.get('article_url', '#')
+            title_text = row.get('title', 'Untitled')
+            summary_text = str(row.get('summary', '')) if row.get('summary') else ''
+
+            # Build product tags
+            product_tags = ""
+            if row.get('products_mentioned'):
+                for product in str(row['products_mentioned']).split(',')[:2]:
+                    product = product.strip()
+                    if product:
+                        product_tags += f'<span style="background: #34C75915; color: #34C759; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.7rem; margin-right: 0.25rem;">{product}</span>'
+
             st.markdown(f"""
             <div style="
                 background: white;
@@ -663,49 +697,58 @@ with tab1:
                 border-radius: 16px;
                 padding: 1.5rem;
                 margin-bottom: 1rem;
+                transition: box-shadow 0.2s ease;
             ">
-                <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
-                    <span style="
-                        background: {sentiment_color}15;
-                        color: {sentiment_color};
-                        padding: 0.25rem 0.75rem;
-                        border-radius: 20px;
-                        font-size: 0.75rem;
-                        font-weight: 500;
-                    ">{row.get('sentiment', 'Neutral')}</span>
-                    <span style="
-                        background: #F5F5F7;
-                        color: #86868B;
-                        padding: 0.25rem 0.75rem;
-                        border-radius: 20px;
-                        font-size: 0.75rem;
-                    ">{row.get('category', 'General')}</span>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <span style="
+                            background: {sentiment_color}15;
+                            color: {sentiment_color};
+                            padding: 0.25rem 0.75rem;
+                            border-radius: 20px;
+                            font-size: 0.75rem;
+                            font-weight: 500;
+                        ">{row.get('sentiment', 'Neutral')}</span>
+                        <span style="
+                            background: #F5F5F7;
+                            color: #86868B;
+                            padding: 0.25rem 0.75rem;
+                            border-radius: 20px;
+                            font-size: 0.75rem;
+                        ">{row.get('category', 'General')}</span>
+                    </div>
+                    <span style="color: #86868B; font-size: 0.75rem;">{pub_date}</span>
                 </div>
-                <h3 style="
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    color: #1D1D1F;
-                    margin-bottom: 0.5rem;
-                    line-height: 1.4;
-                ">{row.get('title', 'Untitled')}</h3>
-                <p style="
-                    color: #86868B;
-                    font-size: 0.9rem;
-                    line-height: 1.6;
-                    margin-bottom: 0.75rem;
-                ">{str(row.get('summary', ''))[:300]}{'...' if len(str(row.get('summary', ''))) > 300 else ''}</p>
-                <div style="margin-bottom: 0.75rem;">
+
+                <a href="{article_url}" target="_blank" style="text-decoration: none;">
+                    <h3 style="
+                        font-size: 1.15rem;
+                        font-weight: 600;
+                        color: #1D1D1F;
+                        margin-bottom: 0.5rem;
+                        line-height: 1.4;
+                        transition: color 0.2s ease;
+                    " onmouseover="this.style.color='#007AFF'" onmouseout="this.style.color='#1D1D1F'">{title_text}</h3>
+                </a>
+
+                <p style="color: #86868B; font-size: 0.8rem; margin-bottom: 0.75rem;">
+                    {row.get('source', 'Unknown')}
+                </p>
+
+                {'<p style="color: #515154; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.75rem; font-style: italic;">' + summary_text[:300] + ('...' if len(summary_text) > 300 else '') + '</p>' if summary_text else '<p style="color: #86868B; font-size: 0.85rem; font-style: italic; margin-bottom: 0.75rem;">No summary available</p>'}
+
+                <div style="display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
                     {tags_html}
+                    {product_tags}
                 </div>
-                <div style="
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding-top: 0.75rem;
-                    border-top: 1px solid #F5F5F7;
-                ">
-                    <span style="color: #86868B; font-size: 0.8rem;">{row.get('source', 'Unknown')}</span>
-                    <span style="color: #86868B; font-size: 0.8rem;">{pub_date}</span>
+
+                <div style="padding-top: 0.75rem; border-top: 1px solid #F5F5F7;">
+                    <a href="{article_url}" target="_blank" style="
+                        color: #007AFF;
+                        font-size: 0.85rem;
+                        font-weight: 500;
+                        text-decoration: none;
+                    ">Read Full Article →</a>
                 </div>
             </div>
             """, unsafe_allow_html=True)
