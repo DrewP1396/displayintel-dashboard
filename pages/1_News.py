@@ -545,7 +545,7 @@ with tab1:
             else:
                 st.warning("No relevant articles found")
 
-        st.caption("Sources: The Elec, Display Daily, Korea Times")
+        st.caption("Sources: The Elec, Display Daily, BusinessKorea, Digitimes, TrendForce, Korea Times")
 
         # AI Summary generation
         st.markdown("**AI Processing**")
@@ -690,9 +690,15 @@ with tab1:
                     if product:
                         product_tags += f'<span style="background: #34C75915; color: #34C759; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.7rem; margin-right: 0.25rem;">{product}</span>'
 
-            # Build summary HTML
+            # Build summary HTML - handle bullet points
             if summary_text:
-                summary_html = f'<p style="color: #515154; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.75rem; font-style: italic;">{summary_text[:300]}{"..." if len(summary_text) > 300 else ""}</p>'
+                # Convert bullet points to HTML list
+                if '•' in summary_text:
+                    bullets = [b.strip() for b in summary_text.split('•') if b.strip()]
+                    bullet_items = ''.join([f'<li style="margin-bottom: 0.25rem;">{b}</li>' for b in bullets[:4]])
+                    summary_html = f'<ul style="color: #515154; font-size: 0.85rem; line-height: 1.5; margin: 0.5rem 0 0.75rem 1rem; padding: 0;">{bullet_items}</ul>'
+                else:
+                    summary_html = f'<p style="color: #515154; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.75rem;">{summary_text[:300]}{"..." if len(summary_text) > 300 else ""}</p>'
             else:
                 summary_html = '<p style="color: #86868B; font-size: 0.85rem; font-style: italic; margin-bottom: 0.75rem;">No summary available</p>'
 

@@ -298,12 +298,22 @@ def fetch_article_details(url: str) -> dict:
                     result['content'] = text[:3000]
                     break
 
-        # Generate summary from content
+        # Generate bullet point summary from content
         if result['content']:
             sentences = re.split(r'(?<=[.!?])\s+', result['content'])
-            summary_sentences = [s.strip() for s in sentences if 40 < len(s.strip()) < 300][:2]
-            if summary_sentences:
-                result['summary'] = ' '.join(summary_sentences)
+            # Filter good sentences (not too short, not too long)
+            good_sentences = [s.strip() for s in sentences if 30 < len(s.strip()) < 250]
+            # Take up to 4 key sentences for bullet points
+            bullet_points = []
+            for s in good_sentences[:6]:
+                # Clean up sentence
+                s = re.sub(r'^(Image:|Photo:|Source:|Credit:).*', '', s).strip()
+                if s and len(s) > 30:
+                    bullet_points.append(f"• {s}")
+                if len(bullet_points) >= 4:
+                    break
+            if bullet_points:
+                result['summary'] = '\n'.join(bullet_points)
 
     except Exception:
         pass
@@ -553,6 +563,235 @@ def scrape_korea_times() -> list:
     return articles
 
 
+def scrape_business_korea() -> list:
+    """
+    Scrape BusinessKorea for display industry news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://www.businesskorea.co.kr"
+
+    # IT/Electronics section
+    urls_to_try = [
+        f"{base_url}/news/articleList.html?sc_section_code=S1N4",  # IT
+        f"{base_url}/news/articleList.html?sc_section_code=S1N3",  # Industry
+    ]
+
+    for url in urls_to_try:
+        try:
+            response = requests.get(url, headers=get_headers(), timeout=15)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = soup.select('a[href*="articleView"]')
+
+            for link in links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+
+                    if not title or len(title) < 20:
+                        continue
+
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+
+                    if href.startswith('/'):
+                        article_url = base_url + href
+                    else:
+                        article_url = href
+
+                    # Filter for display-related content
+                    if not is_display_relevant(title, ""):
+                        continue
+
+                    # Fetch article details
+                    details = fetch_article_details(article_url)
+                    pub_date = details['date'] or date.today().isoformat()
+                    summary = details['summary']
+                    content = details['content'] or ""
+
+                    articles.append({
+                        'title': title,
+                        'source': 'BusinessKorea',
+                        'source_url': base_url,
+                        'article_url': article_url,
+                        'published_date': pub_date,
+                        'summary': summary,
+                        'full_text': content,
+                        'suppliers_mentioned': extract_suppliers_from_text(f"{title} {content}"),
+                        'technologies_mentioned': extract_technologies_from_text(f"{title} {content}"),
+                        'products_mentioned': extract_products_from_text(f"{title} {content}"),
+                        'category': categorize_article(title, content),
+                        'sentiment': analyze_sentiment(title, content)
+                    })
+
+                    time.sleep(0.2)
+
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return articles
+
+
+def scrape_digitimes() -> list:
+    """
+    Scrape Digitimes for display industry news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://www.digitimes.com"
+
+    # Display section
+    urls_to_try = [
+        f"{base_url}/news/ds.html",  # Display
+        f"{base_url}/news/ms.html",  # Mobile
+    ]
+
+    for url in urls_to_try:
+        try:
+            response = requests.get(url, headers=get_headers(), timeout=15)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = soup.select('a[href*="/news/"]')
+
+            for link in links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+
+                    if not title or len(title) < 25:
+                        continue
+
+                    # Skip navigation links
+                    if any(skip in href.lower() for skip in ['category', 'tag', 'author', 'search']):
+                        continue
+
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+
+                    if href.startswith('/'):
+                        article_url = base_url + href
+                    elif not href.startswith('http'):
+                        article_url = base_url + '/' + href
+                    else:
+                        article_url = href
+
+                    # Filter for display-related content
+                    if not is_display_relevant(title, ""):
+                        continue
+
+                    articles.append({
+                        'title': title,
+                        'source': 'Digitimes',
+                        'source_url': base_url,
+                        'article_url': article_url,
+                        'published_date': date.today().isoformat(),
+                        'summary': None,
+                        'suppliers_mentioned': extract_suppliers_from_text(title),
+                        'technologies_mentioned': extract_technologies_from_text(title),
+                        'products_mentioned': extract_products_from_text(title),
+                        'category': categorize_article(title, ""),
+                        'sentiment': analyze_sentiment(title, "")
+                    })
+
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return articles
+
+
+def scrape_trendforce() -> list:
+    """
+    Scrape TrendForce/LEDinside for display industry news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://www.ledinside.com"
+
+    try:
+        url = f"{base_url}/news"
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            return articles
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find news items
+        news_items = soup.select('.news-item, .news-list-item, article, .list-item')
+
+        for item in news_items[:20]:
+            try:
+                link = item.select_one('a[href*="/news/"]')
+                if not link:
+                    link = item.select_one('a')
+                if not link:
+                    continue
+
+                href = link.get('href', '')
+                title = link.get_text(strip=True)
+
+                if not title or len(title) < 20:
+                    continue
+
+                if href in seen_urls:
+                    continue
+                seen_urls.add(href)
+
+                if href.startswith('/'):
+                    article_url = base_url + href
+                elif not href.startswith('http'):
+                    article_url = base_url + '/' + href
+                else:
+                    article_url = href
+
+                # Filter for display-related content
+                if not is_display_relevant(title, ""):
+                    continue
+
+                articles.append({
+                    'title': title,
+                    'source': 'TrendForce',
+                    'source_url': base_url,
+                    'article_url': article_url,
+                    'published_date': date.today().isoformat(),
+                    'summary': None,
+                    'suppliers_mentioned': extract_suppliers_from_text(title),
+                    'technologies_mentioned': extract_technologies_from_text(title),
+                    'products_mentioned': extract_products_from_text(title),
+                    'category': categorize_article(title, ""),
+                    'sentiment': analyze_sentiment(title, "")
+                })
+
+            except Exception:
+                continue
+
+    except Exception:
+        pass
+
+    return articles
+
+
 # =============================================================================
 # Database Functions
 # =============================================================================
@@ -642,11 +881,14 @@ def scrape_all_korea_sources() -> dict:
         'total_duplicates': 0
     }
 
-    # Scrape each source (The Elec is primary Korea source, Display Daily for broader coverage)
+    # Scrape each source
     scrapers = [
         ('The Elec', scrape_the_elec),
         ('Display Daily', scrape_display_daily),
-        ('Korea Times', scrape_korea_times)
+        ('BusinessKorea', scrape_business_korea),
+        ('Digitimes', scrape_digitimes),
+        ('TrendForce', scrape_trendforce),
+        ('Korea Times', scrape_korea_times),
     ]
 
     for source_name, scraper_func in scrapers:
