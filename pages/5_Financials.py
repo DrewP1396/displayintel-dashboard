@@ -1,6 +1,6 @@
 """
 Financials Page - Display Intelligence Dashboard
-Company financials, revenue analysis, and financial metrics.
+Company financials with automated PDF extraction from IR reports.
 """
 
 import streamlit as st
@@ -8,14 +8,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
-import sys
+import sqlite3
+import re
+import os
 from pathlib import Path
+import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_currency, format_with_commas, format_percent
-from utils.database import DatabaseManager
-from utils.exports import create_download_buttons
+from utils.styling import get_css, get_plotly_theme, apply_chart_theme
+from utils.database import DatabaseManager, format_currency, format_percent, format_integer
 
 # Page config
 st.set_page_config(
@@ -32,395 +34,589 @@ if not st.session_state.get("password_correct", False):
     st.warning("Please login from the main page.")
     st.stop()
 
-# Page header
+# Database path
+DB_PATH = Path(__file__).parent.parent / "displayintel.db"
+PDF_DIR = Path(__file__).parent.parent / "source_data" / "financials"
+
+# =============================================================================
+# Database Schema
+# =============================================================================
+
+def init_financials_table():
+    """Create financials table if it doesn't exist."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS company_financials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            quarter TEXT NOT NULL,
+            total_revenue_m REAL,
+            operating_income_m REAL,
+            operating_margin_pct REAL,
+            display_revenue_m REAL,
+            capex_m REAL,
+            ebitda_m REAL,
+            notes TEXT,
+            source_file TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(company, year, quarter)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# Initialize table
+init_financials_table()
+
+# =============================================================================
+# Currency Conversion
+# =============================================================================
+
+KRW_TO_USD = 1300  # 1 USD = 1,300 KRW
+
+def convert_krw_to_usd(amount, unit='trillion'):
+    """Convert KRW to USD millions."""
+    if amount is None:
+        return None
+    if unit == 'trillion':
+        krw_value = amount * 1e12
+    elif unit == 'billion':
+        krw_value = amount * 1e9
+    else:
+        krw_value = amount
+    usd_value = krw_value / KRW_TO_USD
+    return usd_value / 1e6  # Return in millions
+
+# =============================================================================
+# PDF Extraction Functions
+# =============================================================================
+
+def extract_samsung_financials(pdf_path):
+    """Extract financial data from Samsung earnings PDF."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return None, "pdfplumber not installed"
+
+    try:
+        results = {
+            'company': 'Samsung Display',
+            'source_file': os.path.basename(pdf_path)
+        }
+
+        # Parse filename for quarter/year
+        filename = os.path.basename(pdf_path)
+        match = re.search(r'Q(\d)[\s_]*(\d{4})', filename, re.IGNORECASE)
+        if match:
+            results['quarter'] = f"Q{match.group(1)}"
+            results['year'] = int(match.group(2))
+        else:
+            match = re.search(r'(\d{4}).*Q(\d)', filename, re.IGNORECASE)
+            if match:
+                results['year'] = int(match.group(1))
+                results['quarter'] = f"Q{match.group(2)}"
+
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ""
+            for page in pdf.pages[:15]:
+                text = page.extract_text()
+                if text:
+                    full_text += text + "\n"
+
+            # Look for SDC section - pattern: SDC followed by sales numbers
+            # From Samsung PDF: SDC 8.1 8.1 9.5 (4Q24, 3Q25, 4Q25)
+            sdc_pattern = r'SDC\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+[\d%\w↑↓]+\s+[\d%\w↑↓]+.*?([\d.]+)\s+([\d.]+)\s+([\d.]+)'
+            sdc_match = re.search(sdc_pattern, full_text, re.DOTALL)
+
+            if sdc_match:
+                # Last value in sales group, last value in OP group
+                current_q_sales = float(sdc_match.group(3))
+                current_q_op = float(sdc_match.group(6))
+
+                results['display_revenue_m'] = convert_krw_to_usd(current_q_sales, 'trillion')
+                results['total_revenue_m'] = results['display_revenue_m']
+                results['operating_income_m'] = convert_krw_to_usd(current_q_op, 'trillion')
+
+                if results['total_revenue_m'] and results['total_revenue_m'] > 0:
+                    results['operating_margin_pct'] = (results['operating_income_m'] / results['total_revenue_m']) * 100
+
+            # Fallback: Look for SDC in simpler format
+            if 'display_revenue_m' not in results or results.get('display_revenue_m') is None:
+                # Pattern for "SDC ... Sales X.X" and "OP X.X"
+                lines = full_text.split('\n')
+                for i, line in enumerate(lines):
+                    if 'SDC' in line and ('Sales' in line or 'OP' in line):
+                        # Extract numbers from this section
+                        numbers = re.findall(r'(\d+\.?\d*)', line)
+                        if len(numbers) >= 2:
+                            results['display_revenue_m'] = convert_krw_to_usd(float(numbers[-2]), 'trillion')
+                            results['total_revenue_m'] = results['display_revenue_m']
+                            results['operating_income_m'] = convert_krw_to_usd(float(numbers[-1]), 'trillion')
+                            if results['total_revenue_m'] and results['total_revenue_m'] > 0:
+                                results['operating_margin_pct'] = (results['operating_income_m'] / results['total_revenue_m']) * 100
+                            break
+
+            # CapEx from cash flow section
+            capex_pattern = r'Purchase of PP&E.*?([\d.]+)'
+            capex_match = re.search(capex_pattern, full_text)
+            if capex_match:
+                annual_capex = float(capex_match.group(1))
+                results['capex_m'] = convert_krw_to_usd(annual_capex / 4, 'trillion')
+
+        return results, None
+
+    except Exception as e:
+        return None, str(e)
+
+def extract_lgd_financials(pdf_path):
+    """Extract financial data from LG Display PDF."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return None, "pdfplumber not installed"
+
+    try:
+        results = {
+            'company': 'LG Display',
+            'source_file': os.path.basename(pdf_path)
+        }
+
+        # Parse filename for quarter/year
+        filename = os.path.basename(pdf_path)
+        match = re.search(r'Q(\d)[\s_]*(\d{4})', filename, re.IGNORECASE)
+        if match:
+            results['quarter'] = f"Q{match.group(1)}"
+            results['year'] = int(match.group(2))
+
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ""
+            for page in pdf.pages[:30]:
+                text = page.extract_text()
+                if text:
+                    full_text += text + "\n"
+
+            # Look for Financial highlights section
+            # Revenue pattern in millions of Won
+            revenue_pattern = r'Revenue\s+([\d,]+)\s+'
+            revenue_match = re.search(revenue_pattern, full_text)
+
+            if revenue_match:
+                cumulative_revenue = float(revenue_match.group(1).replace(',', ''))
+                # Q3 report has 9 months data, estimate quarterly
+                if 'Q3' in results.get('quarter', ''):
+                    quarterly_revenue = cumulative_revenue / 3
+                else:
+                    quarterly_revenue = cumulative_revenue
+                # Convert from million Won to USD millions
+                results['total_revenue_m'] = (quarterly_revenue * 1e6) / KRW_TO_USD / 1e6
+                results['display_revenue_m'] = results['total_revenue_m']
+
+            # Operating profit/loss
+            op_pattern = r'Operating profit \(loss\)\s+([\d,\-]+)'
+            op_match = re.search(op_pattern, full_text)
+
+            if op_match:
+                op_str = op_match.group(1).replace(',', '')
+                cumulative_op = float(op_str)
+                if 'Q3' in results.get('quarter', ''):
+                    quarterly_op = cumulative_op / 3
+                else:
+                    quarterly_op = cumulative_op
+                results['operating_income_m'] = (quarterly_op * 1e6) / KRW_TO_USD / 1e6
+
+                if results.get('total_revenue_m') and results['total_revenue_m'] != 0:
+                    results['operating_margin_pct'] = (results['operating_income_m'] / results['total_revenue_m']) * 100
+
+            # CapEx
+            capex_pattern = r'capital expenditures.*?W([\d.]+)\s*trillion'
+            capex_match = re.search(capex_pattern, full_text, re.IGNORECASE)
+            if capex_match:
+                annual_capex = float(capex_match.group(1))
+                results['capex_m'] = convert_krw_to_usd(annual_capex / 4, 'trillion')
+
+        return results, None
+
+    except Exception as e:
+        return None, str(e)
+
+def extract_financials_from_pdf(pdf_path):
+    """Extract financial data from PDF based on company."""
+    filename = os.path.basename(pdf_path).lower()
+
+    if 'samsung' in filename or 'sdc' in filename:
+        return extract_samsung_financials(pdf_path)
+    elif 'lg' in filename or 'lgd' in filename:
+        return extract_lgd_financials(pdf_path)
+    else:
+        return None, f"Unknown company in filename: {filename}"
+
+def scan_pdf_directory():
+    """Scan the PDF directory and return list of PDF files."""
+    if not PDF_DIR.exists():
+        return []
+    return list(PDF_DIR.glob("*.pdf"))
+
+# =============================================================================
+# Database Functions
+# =============================================================================
+
+def save_financial_record(record):
+    """Save a financial record to the database."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("""
+            INSERT OR REPLACE INTO company_financials
+            (company, year, quarter, total_revenue_m, operating_income_m,
+             operating_margin_pct, display_revenue_m, capex_m, ebitda_m, notes, source_file)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            record.get('company'),
+            record.get('year'),
+            record.get('quarter'),
+            record.get('total_revenue_m'),
+            record.get('operating_income_m'),
+            record.get('operating_margin_pct'),
+            record.get('display_revenue_m'),
+            record.get('capex_m'),
+            record.get('ebitda_m'),
+            record.get('notes'),
+            record.get('source_file')
+        ))
+        conn.commit()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+def get_all_financials():
+    """Get all financial records from database."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query("""
+            SELECT * FROM company_financials
+            ORDER BY year DESC, quarter DESC, company
+        """, conn)
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+def delete_financial_record(record_id):
+    """Delete a financial record."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM company_financials WHERE id = ?", (record_id,))
+    conn.commit()
+    conn.close()
+
+# =============================================================================
+# Page Header
+# =============================================================================
+
 st.markdown("""
     <h1>💰 Financial Intelligence</h1>
     <p style="color: #86868B; font-size: 1.1rem; margin-bottom: 2rem;">
-        Company financials, revenue trends, and profitability analysis
+        Company financials with automated PDF extraction from IR reports
     </p>
 """, unsafe_allow_html=True)
-
-# Filters in sidebar
-with st.sidebar:
-    st.markdown("### Filters")
-
-    manufacturer = st.selectbox(
-        "Manufacturer",
-        options=DatabaseManager.get_manufacturers(),
-        key="fin_manufacturer"
-    )
-
-    st.divider()
-
-    st.markdown("### Date Range")
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Start",
-            value=date(2020, 1, 1),
-            key="fin_start"
-        )
-    with col2:
-        end_date = st.date_input(
-            "End",
-            value=date.today(),
-            key="fin_end"
-        )
-
-# Load financial data
-financials_df = DatabaseManager.get_financials(
-    start_date=start_date.strftime("%Y-%m-%d"),
-    end_date=end_date.strftime("%Y-%m-%d"),
-    manufacturer=manufacturer
-)
 
 # Get theme colors
 theme = get_plotly_theme()
 colors = theme['color_discrete_sequence']
 
-# Main content
-if len(financials_df) > 0:
-    # Main tabs
-    tab1, tab2, tab3 = st.tabs(["Overview", "Profitability", "Company Details"])
+# =============================================================================
+# Main Content Tabs
+# =============================================================================
 
-    # Tab 1: Overview
-    with tab1:
-        # Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
+tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "PDF Processing", "Manual Entry", "Data Management"])
 
-        with col1:
-            total_revenue = financials_df['revenue_m'].sum()
-            st.metric("Total Revenue", format_currency(total_revenue))
+# =============================================================================
+# Tab 1: Dashboard
+# =============================================================================
 
-        with col2:
-            total_ebitda = financials_df['ebitda_m'].sum() if 'ebitda_m' in financials_df.columns else 0
-            st.metric("Total EBITDA", format_currency(total_ebitda))
+with tab1:
+    financials_df = get_all_financials()
 
-        with col3:
-            avg_margin = financials_df['operating_margin_pct'].mean() if 'operating_margin_pct' in financials_df.columns else 0
-            st.metric("Avg Operating Margin", format_percent(avg_margin))
+    if len(financials_df) > 0:
+        # Sidebar filters
+        with st.sidebar:
+            st.markdown("### Filters")
+            selected_companies = st.multiselect(
+                "Company",
+                options=financials_df['company'].unique().tolist(),
+                default=financials_df['company'].unique().tolist(),
+                key="fin_company"
+            )
 
-        with col4:
-            total_capex = financials_df['capex_m'].sum() if 'capex_m' in financials_df.columns else 0
-            st.metric("Total CapEx", format_currency(total_capex))
+            years = sorted(financials_df['year'].unique().tolist(), reverse=True)
+            if len(years) > 1:
+                year_range = st.select_slider(
+                    "Year Range",
+                    options=years,
+                    value=(min(years), max(years)),
+                    key="fin_year_range"
+                )
+            else:
+                year_range = (years[0], years[0])
+
+        # Filter data
+        filtered_df = financials_df[
+            (financials_df['company'].isin(selected_companies)) &
+            (financials_df['year'] >= year_range[0]) &
+            (financials_df['year'] <= year_range[1])
+        ]
+
+        # Summary Cards
+        st.markdown("### Latest Results")
+        latest = filtered_df.sort_values(['year', 'quarter'], ascending=False).groupby('company').first().reset_index()
+
+        cols = st.columns(min(len(latest), 4))
+        for i, (_, row) in enumerate(latest.iterrows()):
+            with cols[i % len(cols)]:
+                margin_color = "#34C759" if row.get('operating_margin_pct') and row['operating_margin_pct'] > 0 else "#FF3B30"
+                rev_str = format_currency(row['total_revenue_m'] * 1e6) if pd.notna(row.get('total_revenue_m')) else 'N/A'
+                margin_str = f"{row['operating_margin_pct']:.1f}%" if pd.notna(row.get('operating_margin_pct')) else 'N/A'
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #FFFFFF 0%, #F5F5F7 100%);
+                            border: 1px solid #E5E5E7; border-radius: 16px; padding: 1.25rem;">
+                    <p style="color: #86868B; font-size: 0.9rem; margin-bottom: 0.5rem;">
+                        {row['company']} {row['quarter']} {int(row['year'])}
+                    </p>
+                    <p style="font-size: 1.5rem; font-weight: 700; color: #1D1D1F; margin-bottom: 0.25rem;">
+                        {rev_str}
+                    </p>
+                    <p style="color: {margin_color}; font-size: 0.9rem;">
+                        Op Margin: {margin_str}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
 
         st.divider()
 
-        # Revenue over time
-        st.markdown("#### Revenue Trends")
-
-        # Filter valid manufacturers
-        valid_mfr = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
-        revenue_by_quarter = valid_mfr.groupby(['date', 'manufacturer'])['revenue_m'].sum().reset_index()
-
-        if len(revenue_by_quarter) > 0:
-            fig = px.bar(
-                revenue_by_quarter,
-                x='date',
-                y='revenue_m',
-                color='manufacturer',
-                color_discrete_sequence=colors
-            )
-            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Quarter",
-                yaxis_title="Revenue ($M)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                barmode='stack'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Revenue by manufacturer
-        st.divider()
+        # Charts
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("#### Revenue by Manufacturer")
+            st.markdown("#### Revenue Trends")
+            chart_df = filtered_df.copy()
+            chart_df['period'] = chart_df['year'].astype(str) + ' ' + chart_df['quarter']
+            chart_df = chart_df.sort_values(['year', 'quarter'])
 
-            mfr_revenue = valid_mfr.groupby('manufacturer')['revenue_m'].sum().sort_values(ascending=False)
-
-            if len(mfr_revenue) > 0:
-                fig = px.pie(
-                    values=mfr_revenue.values.tolist(),
-                    names=mfr_revenue.index.tolist(),
-                    color_discrete_sequence=colors,
-                    hole=0.4
-                )
-                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
+            if len(chart_df) > 0:
+                fig = px.line(chart_df, x='period', y='total_revenue_m', color='company',
+                              markers=True, color_discrete_sequence=colors)
+                fig.update_traces(hovertemplate='%{x}<br>Revenue: $%{y:,.0f}M<extra></extra>')
                 apply_chart_theme(fig)
-                fig.update_layout(height=350)
+                fig.update_layout(xaxis_title="Quarter", yaxis_title="Revenue ($M)", height=350,
+                                  legend=dict(orientation='h', yanchor='bottom', y=1.02))
                 st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            st.markdown("#### Revenue Rankings")
-
-            mfr_table = valid_mfr.groupby('manufacturer').agg({
-                'revenue_m': 'sum',
-                'ebitda_m': 'sum',
-                'operating_margin_pct': 'mean'
-            }).reset_index()
-            mfr_table.columns = ['Manufacturer', 'Revenue ($M)', 'EBITDA ($M)', 'Avg Margin (%)']
-            mfr_table = mfr_table.sort_values('Revenue ($M)', ascending=False)
-
-            st.dataframe(
-                mfr_table,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Manufacturer": st.column_config.TextColumn("Manufacturer", width="medium"),
-                    "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
-                    "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
-                    "Avg Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f%%")
-                }
-            )
-
-    # Tab 2: Profitability
-    with tab2:
-        st.markdown("#### Operating Margin Trends")
-
-        if 'operating_margin_pct' in financials_df.columns:
-            valid_margins = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
-            margin_trends = valid_margins.groupby(['date', 'manufacturer'])['operating_margin_pct'].mean().reset_index()
-
-            if len(margin_trends) > 0:
-                fig = px.line(
-                    margin_trends,
-                    x='date',
-                    y='operating_margin_pct',
-                    color='manufacturer',
-                    color_discrete_sequence=colors,
-                    markers=True
-                )
-                fig.update_traces(hovertemplate='%{x}<br>%{y:.1f}%<extra></extra>')
+            st.markdown("#### Operating Margin Trends")
+            if len(chart_df) > 0:
+                fig = px.line(chart_df, x='period', y='operating_margin_pct', color='company',
+                              markers=True, color_discrete_sequence=colors)
+                fig.update_traces(hovertemplate='%{x}<br>Margin: %{y:.1f}%<extra></extra>')
                 apply_chart_theme(fig)
-                fig.update_layout(
-                    xaxis_title="Quarter",
-                    yaxis_title="Operating Margin (%)",
-                    height=400,
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02)
-                )
-                # Add break-even line
+                fig.update_layout(xaxis_title="Quarter", yaxis_title="Operating Margin (%)", height=350,
+                                  legend=dict(orientation='h', yanchor='bottom', y=1.02))
                 fig.add_hline(y=0, line_dash="dash", line_color="#FF3B30", annotation_text="Break-even")
                 st.plotly_chart(fig, use_container_width=True)
 
+        # CapEx chart
+        capex_df = chart_df[chart_df['capex_m'].notna()]
+        if len(capex_df) > 0:
+            st.divider()
+            st.markdown("#### Capital Expenditure")
+            fig = px.bar(capex_df, x='period', y='capex_m', color='company',
+                         barmode='group', color_discrete_sequence=colors)
+            fig.update_traces(hovertemplate='%{x}<br>CapEx: $%{y:,.0f}M<extra></extra>')
+            apply_chart_theme(fig)
+            fig.update_layout(xaxis_title="Quarter", yaxis_title="CapEx ($M)", height=350,
+                              legend=dict(orientation='h', yanchor='bottom', y=1.02))
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Data table
         st.divider()
+        st.markdown("#### Financial Records")
+        display_df = filtered_df[['company', 'year', 'quarter', 'total_revenue_m',
+                                   'operating_income_m', 'operating_margin_pct', 'capex_m', 'source_file']].copy()
+        st.dataframe(display_df, use_container_width=True, hide_index=True,
+            column_config={
+                "company": st.column_config.TextColumn("Company"),
+                "year": st.column_config.NumberColumn("Year", format="%d"),
+                "quarter": st.column_config.TextColumn("Quarter"),
+                "total_revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                "operating_income_m": st.column_config.NumberColumn("Op Income ($M)", format="$%,.0f"),
+                "operating_margin_pct": st.column_config.NumberColumn("Margin (%)", format="%.1f%%"),
+                "capex_m": st.column_config.NumberColumn("CapEx ($M)", format="$%,.0f"),
+                "source_file": st.column_config.TextColumn("Source")
+            })
+
+        csv = filtered_df.to_csv(index=False)
+        st.download_button("Download CSV", csv, "financials_export.csv", "text/csv")
+
+    else:
+        st.info("No financial data available. Use the **PDF Processing** or **Manual Entry** tabs to add data.")
+
+# =============================================================================
+# Tab 2: PDF Processing
+# =============================================================================
+
+with tab2:
+    st.markdown("### PDF Extraction")
+    st.markdown(f"**PDF Directory:** `{PDF_DIR}`")
+
+    pdf_files = scan_pdf_directory()
+
+    if pdf_files:
+        st.success(f"Found {len(pdf_files)} PDF file(s)")
+        for pdf in pdf_files:
+            st.markdown(f"- `{pdf.name}`")
+
+        st.divider()
+
+        if st.button("🔍 Extract Data from PDFs", type="primary"):
+            results = []
+            errors = []
+            progress = st.progress(0)
+            status = st.empty()
+
+            for i, pdf_path in enumerate(pdf_files):
+                status.markdown(f"Processing: `{pdf_path.name}`...")
+                progress.progress((i + 1) / len(pdf_files))
+                data, error = extract_financials_from_pdf(str(pdf_path))
+                if data and 'year' in data and 'quarter' in data:
+                    results.append(data)
+                else:
+                    errors.append(f"{pdf_path.name}: {error or 'Missing year/quarter'}")
+
+            status.empty()
+            progress.empty()
+
+            if results:
+                st.markdown("### Extracted Data Preview")
+                preview_df = pd.DataFrame(results)
+                st.dataframe(preview_df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "company": "Company",
+                        "year": st.column_config.NumberColumn("Year", format="%d"),
+                        "quarter": "Quarter",
+                        "total_revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                        "operating_income_m": st.column_config.NumberColumn("Op Income ($M)", format="$%,.0f"),
+                        "operating_margin_pct": st.column_config.NumberColumn("Margin (%)", format="%.1f%%"),
+                        "capex_m": st.column_config.NumberColumn("CapEx ($M)", format="$%,.0f"),
+                        "source_file": "Source"
+                    })
+
+                st.session_state['extracted_financials'] = results
+
+                if st.button("💾 Save to Database", type="primary"):
+                    saved, skipped = 0, 0
+                    for record in results:
+                        success, _ = save_financial_record(record)
+                        if success:
+                            saved += 1
+                        else:
+                            skipped += 1
+                    st.success(f"✅ {saved} records saved, {skipped} skipped")
+                    st.rerun()
+
+            if errors:
+                st.warning("Some files had errors:")
+                for err in errors:
+                    st.markdown(f"- {err}")
+    else:
+        st.warning(f"No PDF files found in `{PDF_DIR}`")
+        st.markdown("""
+        **To add financial data:**
+        1. Download quarterly earnings PDFs from Samsung and LG Display IR websites
+        2. Save them to `source_data/financials/` with names like:
+           - `Samsung_Q4_2025.pdf`
+           - `LGD_Q3_2025.pdf`
+        3. Return here and click "Extract Data from PDFs"
+        """)
+
+# =============================================================================
+# Tab 3: Manual Entry
+# =============================================================================
+
+with tab3:
+    st.markdown("### Manual Data Entry")
+
+    with st.form("manual_entry_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            company = st.selectbox("Company", ["Samsung Display", "LG Display", "BOE", "AUO", "Innolux", "Other"])
+        with col2:
+            year = st.selectbox("Year", list(range(2026, 2019, -1)))
+        with col3:
+            quarter = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4"])
 
         col1, col2 = st.columns(2)
-
         with col1:
-            st.markdown("#### EBITDA by Manufacturer")
-
-            if 'ebitda_m' in financials_df.columns:
-                valid_ebitda = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
-                ebitda_by_mfr = valid_ebitda.groupby('manufacturer')['ebitda_m'].sum().sort_values(ascending=True)
-
-                if len(ebitda_by_mfr) > 0:
-                    fig = px.bar(
-                        x=ebitda_by_mfr.values.tolist(),
-                        y=ebitda_by_mfr.index.tolist(),
-                        orientation='h'
-                    )
-                    fig.update_traces(marker_color=colors[0], hovertemplate='%{y}<br>$%{x:,.0f}M<extra></extra>')
-                    apply_chart_theme(fig)
-                    fig.update_layout(
-                        showlegend=False,
-                        xaxis_title="EBITDA ($M)",
-                        yaxis_title="",
-                        height=400
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
+            total_revenue = st.number_input("Total Revenue ($M)", min_value=0.0, step=100.0)
+            operating_income = st.number_input("Operating Income ($M)", step=100.0)
+            capex = st.number_input("CapEx ($M)", min_value=0.0, step=100.0)
         with col2:
-            st.markdown("#### Margin Distribution")
+            display_revenue = st.number_input("Display Segment Revenue ($M)", min_value=0.0, step=100.0)
+            ebitda = st.number_input("EBITDA ($M)", step=100.0)
+            notes = st.text_input("Notes")
 
-            if 'operating_margin_pct' in financials_df.columns:
-                valid_box = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
-
-                if len(valid_box) > 0:
-                    fig = px.box(
-                        valid_box,
-                        x='manufacturer',
-                        y='operating_margin_pct',
-                        color='manufacturer',
-                        color_discrete_sequence=colors
-                    )
-                    apply_chart_theme(fig)
-                    fig.update_layout(
-                        showlegend=False,
-                        xaxis_title="",
-                        yaxis_title="Operating Margin (%)",
-                        height=400
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-        # Profitability metrics table
-        st.divider()
-        st.markdown("#### Profitability Metrics by Company")
-
-        valid_profit = financials_df[financials_df['manufacturer'].notna() & (financials_df['manufacturer'] != '')]
-        profit_metrics = valid_profit.groupby('manufacturer').agg({
-            'revenue_m': ['sum', 'mean'],
-            'ebitda_m': ['sum', 'mean'],
-            'operating_margin_pct': ['mean', 'min', 'max']
-        }).reset_index()
-
-        profit_metrics.columns = [
-            'Manufacturer', 'Total Revenue', 'Avg Quarterly Revenue',
-            'Total EBITDA', 'Avg Quarterly EBITDA',
-            'Avg Margin', 'Min Margin', 'Max Margin'
-        ]
-
-        st.dataframe(
-            profit_metrics,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Manufacturer": st.column_config.TextColumn("Manufacturer"),
-                "Total Revenue": st.column_config.NumberColumn("Total Rev ($M)", format="$%,.0f"),
-                "Avg Quarterly Revenue": st.column_config.NumberColumn("Avg Qtr Rev ($M)", format="$%,.0f"),
-                "Total EBITDA": st.column_config.NumberColumn("Total EBITDA ($M)", format="$%,.0f"),
-                "Avg Quarterly EBITDA": st.column_config.NumberColumn("Avg Qtr EBITDA ($M)", format="$%,.0f"),
-                "Avg Margin": st.column_config.NumberColumn("Avg Margin (%)", format="%.1f%%"),
-                "Min Margin": st.column_config.NumberColumn("Min Margin (%)", format="%.1f%%"),
-                "Max Margin": st.column_config.NumberColumn("Max Margin (%)", format="%.1f%%")
+        if st.form_submit_button("Save Record", type="primary"):
+            margin = (operating_income / total_revenue * 100) if total_revenue > 0 else None
+            record = {
+                'company': company, 'year': year, 'quarter': quarter,
+                'total_revenue_m': total_revenue or None,
+                'operating_income_m': operating_income or None,
+                'operating_margin_pct': margin,
+                'display_revenue_m': display_revenue or None,
+                'capex_m': capex or None,
+                'ebitda_m': ebitda or None,
+                'notes': notes or None,
+                'source_file': 'Manual Entry'
             }
-        )
+            success, error = save_financial_record(record)
+            if success:
+                st.success(f"✅ Saved {company} {quarter} {year}")
+                st.rerun()
+            else:
+                st.error(f"Error: {error}")
 
-    # Tab 3: Company Details
-    with tab3:
-        st.markdown("#### Detailed Financial Records")
+# =============================================================================
+# Tab 4: Data Management
+# =============================================================================
 
-        display_cols = [
-            'date', 'manufacturer', 'revenue_m', 'ebitda_m',
-            'operating_margin_pct', 'capex_m'
-        ]
-        available_cols = [c for c in display_cols if c in financials_df.columns]
+with tab4:
+    st.markdown("### Data Management")
+    all_data = get_all_financials()
 
-        st.dataframe(
-            financials_df[available_cols],
-            use_container_width=True,
-            hide_index=True,
-            height=500,
+    if len(all_data) > 0:
+        st.markdown(f"**Total Records:** {len(all_data)}")
+        st.dataframe(all_data, use_container_width=True, hide_index=True,
             column_config={
-                "date": st.column_config.TextColumn("Date", width="small"),
-                "manufacturer": st.column_config.TextColumn("Manufacturer", width="medium"),
-                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
-                "ebitda_m": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
+                "id": st.column_config.NumberColumn("ID"),
+                "company": "Company",
+                "year": st.column_config.NumberColumn("Year", format="%d"),
+                "quarter": "Quarter",
+                "total_revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                "operating_income_m": st.column_config.NumberColumn("Op Income ($M)", format="$%,.0f"),
                 "operating_margin_pct": st.column_config.NumberColumn("Margin (%)", format="%.1f%%"),
-                "capex_m": st.column_config.NumberColumn("CapEx ($M)", format="$%,.0f")
-            }
-        )
+                "source_file": "Source"
+            })
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        create_download_buttons(financials_df, "financials", "Financial Intelligence Report")
-
-        # CapEx analysis
-        if 'capex_m' in financials_df.columns:
-            st.divider()
-            st.markdown("#### Capital Expenditure Trends")
-
-            capex_trends = financials_df.groupby('date')['capex_m'].sum().reset_index()
-
-            if len(capex_trends) > 0:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=capex_trends['date'].tolist(),
-                    y=capex_trends['capex_m'].tolist(),
-                    mode='lines+markers',
-                    fill='tozeroy',
-                    line=dict(color=colors[0], width=2),
-                    fillcolor='rgba(0, 122, 255, 0.1)',
-                    hovertemplate='%{x}<br>CapEx: $%{y:,.0f}M<extra></extra>'
-                ))
-                apply_chart_theme(fig)
-                fig.update_layout(
-                    xaxis_title="Quarter",
-                    yaxis_title="CapEx ($M)",
-                    height=350,
-                    showlegend=False
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-else:
-    # Empty state - show placeholder content
-    st.markdown("""
-    <div style="
-        text-align: center;
-        padding: 4rem 2rem;
-        background: #F5F5F7;
-        border-radius: 20px;
-        margin-top: 2rem;
-    ">
-        <div style="font-size: 4rem; margin-bottom: 1rem;">💰</div>
-        <h2 style="color: #1D1D1F; margin-bottom: 0.5rem;">No Financial Data Yet</h2>
-        <p style="color: #86868B; max-width: 400px; margin: 0 auto;">
-            Financial data will appear here as it is added to the database.
-            This section will include revenue, EBITDA, operating margins, and CapEx data.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Show sample layout
-    st.divider()
-    st.markdown("### Sample Financial Layout")
-    st.info("The following shows how financial data will be displayed when available:")
-
-    # Sample metrics
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.markdown("""
-        <div style="background: #F5F5F7; border-radius: 16px; padding: 1.25rem; opacity: 0.6;">
-            <p style="color: #86868B; font-size: 0.875rem; margin-bottom: 0.25rem;">Total Revenue</p>
-            <p style="font-size: 2rem; font-weight: 700; color: #1D1D1F;">$24.5B</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        st.markdown("""
-        <div style="background: #F5F5F7; border-radius: 16px; padding: 1.25rem; opacity: 0.6;">
-            <p style="color: #86868B; font-size: 0.875rem; margin-bottom: 0.25rem;">Total EBITDA</p>
-            <p style="font-size: 2rem; font-weight: 700; color: #1D1D1F;">$3.2B</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown("""
-        <div style="background: #F5F5F7; border-radius: 16px; padding: 1.25rem; opacity: 0.6;">
-            <p style="color: #86868B; font-size: 0.875rem; margin-bottom: 0.25rem;">Avg Margin</p>
-            <p style="font-size: 2rem; font-weight: 700; color: #1D1D1F;">12.8%</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        st.markdown("""
-        <div style="background: #F5F5F7; border-radius: 16px; padding: 1.25rem; opacity: 0.6;">
-            <p style="color: #86868B; font-size: 0.875rem; margin-bottom: 0.25rem;">Total CapEx</p>
-            <p style="font-size: 2rem; font-weight: 700; color: #1D1D1F;">$8.7B</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Sample company table
-    sample_data = pd.DataFrame({
-        'Manufacturer': ['BOE', 'Samsung Display', 'LG Display', 'AUO', 'Innolux'],
-        'Revenue ($M)': [12500, 8200, 5800, 3200, 2800],
-        'EBITDA ($M)': [1800, 950, 420, 280, 190],
-        'Margin (%)': [14.4, 11.6, 7.2, 8.8, 6.8]
-    })
-
-    st.markdown("#### Sample Company Financials")
-    st.dataframe(
-        sample_data,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Manufacturer": st.column_config.TextColumn("Manufacturer"),
-            "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
-            "EBITDA ($M)": st.column_config.NumberColumn("EBITDA ($M)", format="$%,.0f"),
-            "Margin (%)": st.column_config.NumberColumn("Margin (%)", format="%.1f%%")
-        }
-    )
+        st.divider()
+        st.markdown("#### Delete Record")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            record_id = st.selectbox("Select record",
+                options=all_data['id'].tolist(),
+                format_func=lambda x: f"ID {x}: {all_data[all_data['id']==x]['company'].values[0]} {all_data[all_data['id']==x]['quarter'].values[0]} {int(all_data[all_data['id']==x]['year'].values[0])}")
+        with col2:
+            if st.button("🗑️ Delete"):
+                delete_financial_record(record_id)
+                st.success("Deleted")
+                st.rerun()
+    else:
+        st.info("No records in database.")
