@@ -36,7 +36,29 @@ if not st.session_state.get("password_correct", False):
 
 # Database path
 DB_PATH = Path(__file__).parent.parent / "displayintel.db"
-PDF_DIR = Path(__file__).parent.parent / "source_data" / "financials"
+
+# PDF directory with fallback logic for local vs Streamlit Cloud
+def get_pdf_directory():
+    """Get PDF directory path with fallback for different environments."""
+    # Try local path first (expanded ~)
+    local_path = Path.home() / "displayintel" / "source_data" / "financials"
+    if local_path.exists():
+        return local_path
+
+    # Try relative path (works in both environments)
+    relative_path = Path(__file__).parent.parent / "source_data" / "financials"
+    if relative_path.exists():
+        return relative_path
+
+    # Try Streamlit Cloud path
+    cloud_path = Path("/mount/src/displayintel-dashboard/source_data/financials")
+    if cloud_path.exists():
+        return cloud_path
+
+    # Return relative path as default (will show "not found" message)
+    return relative_path
+
+PDF_DIR = get_pdf_directory()
 
 # =============================================================================
 # Database Schema
