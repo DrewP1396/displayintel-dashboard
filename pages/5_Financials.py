@@ -488,12 +488,23 @@ with tab1:
 
 with tab2:
     st.markdown("### PDF Extraction")
-    st.markdown(f"**PDF Directory:** `{PDF_DIR}`")
-    st.caption(f"Directory exists: {PDF_DIR.exists()}")
 
     pdf_files = scan_pdf_directory()
 
-    if pdf_files:
+    if not PDF_DIR.exists() or not pdf_files:
+        st.info("""
+        **PDF Extraction is for local development.**
+
+        On Streamlit Cloud, use the **Manual Entry** tab to add financial data.
+
+        **For local use:**
+        1. Place PDF files in `~/displayintel/source_data/financials/`
+        2. Name files like `Samsung_Q4_2025.pdf` or `LGD_Q3_2025.pdf`
+        3. Return here and click "Extract Data from PDFs"
+        """)
+        st.caption(f"Looking in: `{PDF_DIR}`")
+    else:
+        st.markdown(f"**PDF Directory:** `{PDF_DIR}`")
         st.success(f"Found {len(pdf_files)} PDF file(s)")
         for pdf in pdf_files:
             st.markdown(f"- `{pdf.name}`")
@@ -550,16 +561,6 @@ with tab2:
                 st.warning("Some files had errors:")
                 for err in errors:
                     st.markdown(f"- {err}")
-    else:
-        st.warning(f"No PDF files found in `{PDF_DIR}`")
-        st.markdown("""
-        **To add financial data:**
-        1. Download quarterly earnings PDFs from Samsung and LG Display IR websites
-        2. Save them to `source_data/financials/` with names like:
-           - `Samsung_Q4_2025.pdf`
-           - `LGD_Q3_2025.pdf`
-        3. Return here and click "Extract Data from PDFs"
-        """)
 
 # =============================================================================
 # Tab 3: Manual Entry

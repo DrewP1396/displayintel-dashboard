@@ -9,9 +9,8 @@ displayintel.db
 *.xls
 *.csv
 
-# PDF reports (except financials for IR data extraction)
+# PDF reports
 *.pdf
-!source_data/financials/*.pdf
 
 # Environment files
 .env
