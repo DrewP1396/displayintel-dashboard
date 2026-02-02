@@ -48,26 +48,102 @@ SENTIMENTS = ["Positive", "Neutral", "Negative", "Mixed"]
 # =============================================================================
 
 def init_news_table():
-    """Create news table if it doesn't exist."""
+    """Create news table if it doesn't exist, or migrate old schema."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS news (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            source TEXT NOT NULL,
-            source_url TEXT,
-            article_url TEXT,
-            published_date DATE,
-            summary TEXT,
-            full_text TEXT,
-            suppliers_mentioned TEXT,
-            technologies_mentioned TEXT,
-            products_mentioned TEXT,
-            category TEXT,
-            sentiment TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+
+    # Check if table exists and get its columns
+    cursor = conn.execute("PRAGMA table_info(news)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if not columns:
+        # Table doesn't exist - create new schema
+        conn.execute("""
+            CREATE TABLE news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_url TEXT,
+                article_url TEXT,
+                published_date DATE,
+                summary TEXT,
+                full_text TEXT,
+                suppliers_mentioned TEXT,
+                technologies_mentioned TEXT,
+                products_mentioned TEXT,
+                category TEXT,
+                sentiment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        # Table exists - check if it has old schema (has 'content' but not 'sentiment')
+        if 'content' in columns and 'sentiment' not in columns:
+            # Migrate from old schema to new schema
+            # Rename old table
+            conn.execute("ALTER TABLE news RENAME TO news_old")
+
+            # Create new table with correct schema
+            conn.execute("""
+                CREATE TABLE news (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    source_url TEXT,
+                    article_url TEXT,
+                    published_date DATE,
+                    summary TEXT,
+                    full_text TEXT,
+                    suppliers_mentioned TEXT,
+                    technologies_mentioned TEXT,
+                    products_mentioned TEXT,
+                    category TEXT,
+                    sentiment TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Migrate data from old table to new table
+            conn.execute("""
+                INSERT INTO news (id, title, source, article_url, published_date, summary,
+                                  full_text, suppliers_mentioned, category, created_at)
+                SELECT id, title, source, url, published_date, summary,
+                       content, manufacturers, category, created_at
+                FROM news_old
+            """)
+
+            # Drop old table
+            conn.execute("DROP TABLE news_old")
+        elif 'sentiment' not in columns:
+            # Just add missing columns
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN suppliers_mentioned TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN technologies_mentioned TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN products_mentioned TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN full_text TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN source_url TEXT")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE news ADD COLUMN article_url TEXT")
+            except:
+                pass
+
     conn.commit()
     conn.close()
 
