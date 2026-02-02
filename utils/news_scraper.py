@@ -565,7 +565,7 @@ def scrape_korea_times() -> list:
 
 def scrape_business_korea() -> list:
     """
-    Scrape BusinessKorea for display industry news.
+    Scrape BusinessKorea for display industry news using search.
 
     Returns:
         List of article dicts
@@ -574,14 +574,12 @@ def scrape_business_korea() -> list:
     seen_urls = set()
     base_url = "https://www.businesskorea.co.kr"
 
-    # IT/Electronics section
-    urls_to_try = [
-        f"{base_url}/news/articleList.html?sc_section_code=S1N4",  # IT
-        f"{base_url}/news/articleList.html?sc_section_code=S1N3",  # Industry
-    ]
+    # Search for display-related terms
+    search_terms = ['OLED', 'display', 'Samsung+Display', 'LG+Display', 'panel+maker']
 
-    for url in urls_to_try:
+    for term in search_terms:
         try:
+            url = f"{base_url}/news/articleList.html?sc_word={term}"
             response = requests.get(url, headers=get_headers(), timeout=15)
             if response.status_code != 200:
                 continue
@@ -589,7 +587,7 @@ def scrape_business_korea() -> list:
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.select('a[href*="articleView"]')
 
-            for link in links:
+            for link in links[:10]:  # Limit per search term
                 try:
                     href = link.get('href', '')
                     title = link.get_text(strip=True)
