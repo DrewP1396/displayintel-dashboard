@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.styling import get_css, get_plotly_theme
 from utils.database import format_integer
+from utils.news_scraper import scrape_all_korea_sources
 
 # Page config
 st.set_page_config(
@@ -519,6 +520,32 @@ with tab1:
             placeholder="Search articles...",
             key="news_search"
         )
+
+        st.divider()
+
+        # Fetch from web sources
+        st.markdown("**Web Scraping**")
+        if st.button("Fetch Latest (Korea)", use_container_width=True, type="primary"):
+            with st.spinner("Scanning sources..."):
+                results = scrape_all_korea_sources()
+
+            # Show results
+            st.markdown("**Results:**")
+            for source, data in results['sources'].items():
+                if 'error' in data:
+                    st.error(f"{source}: Error - {data['error'][:30]}")
+                else:
+                    st.markdown(f"- **{source}**: {data['found']} found, {data['saved']} new, {data['duplicates']} duplicates")
+
+            if results['total_saved'] > 0:
+                st.success(f"Saved {results['total_saved']} new articles!")
+                st.rerun()
+            elif results['total_relevant'] > 0:
+                st.info("No new articles (all duplicates)")
+            else:
+                st.warning("No relevant articles found")
+
+        st.caption("Sources: The Elec, Display Daily, Korea Times")
 
         st.divider()
 

@@ -1,0 +1,648 @@
+"""
+News Scraper for Display Intelligence Dashboard
+Scrapes display panel industry news from Korean sources.
+"""
+
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, date
+import sqlite3
+from pathlib import Path
+import re
+import time
+
+# Database path
+DB_PATH = Path(__file__).parent.parent / "displayintel.db"
+
+# =============================================================================
+# Relevance Filtering
+# =============================================================================
+
+# Company names to look for
+DISPLAY_COMPANIES = [
+    'samsung display', 'lg display', 'lgd', 'sdc',
+    'boe', 'csot', 'tcl csot', 'china star',
+    'auo', 'au optronics', 'innolux',
+    'sharp', 'sharp display',
+    'jdi', 'japan display',
+    'tianma', 'visionox', 'everdisplay', 'edo',
+    'panel maker', 'display maker', 'display manufacturer'
+]
+
+# Display industry keywords
+DISPLAY_KEYWORDS = [
+    # Technologies
+    'oled', 'amoled', 'lcd', 'qd-oled', 'woled', 'qned',
+    'ltpo', 'ltps', 'igzo', 'a-si',
+    'microled', 'micro-led', 'micro led',
+    'miniled', 'mini-led', 'mini led',
+    'foldable display', 'flexible display', 'rollable display',
+    'tandem oled', 'blue pholed',
+
+    # Manufacturing
+    'display panel', 'panel production', 'panel shipment',
+    'gen 6', 'gen 8', 'gen 10', 'g6', 'g8', 'g8.5', 'g8.7', 'g10.5',
+    'fab', 'fabrication', 'mass production',
+    'utilization', 'capacity', 'substrate',
+    'evaporator', 'encapsulation', 'backplane',
+    'deposition', 'lithography', 'tft',
+
+    # Business terms
+    'display investment', 'display expansion',
+    'panel price', 'display revenue',
+    'display order', 'panel order',
+    'display supply', 'panel supply'
+]
+
+# Keywords that indicate non-display content (negative filter)
+EXCLUDE_KEYWORDS = [
+    'galaxy s2', 'galaxy z', 'iphone review', 'phone review',
+    'tv review', 'monitor review', 'laptop review',
+    'home appliance', 'refrigerator', 'washing machine',
+    'battery cell', 'ev battery', 'battery pack',
+    'semiconductor fab', 'chip fab', 'memory chip',
+    'autonomous driving', 'robot vacuum'
+]
+
+
+def is_display_relevant(title: str, text: str = "") -> bool:
+    """
+    Check if article is relevant to display panel industry.
+
+    Args:
+        title: Article title
+        text: Article summary or full text (optional)
+
+    Returns:
+        True if article is about display industry
+    """
+    # Combine title and text for searching
+    content = f"{title} {text}".lower()
+
+    # First check exclusions - skip if clearly not about displays
+    for exclude in EXCLUDE_KEYWORDS:
+        if exclude in content:
+            # But allow if also contains strong display signals
+            has_display_signal = any(
+                kw in content for kw in ['display', 'oled', 'lcd', 'panel']
+            )
+            if not has_display_signal:
+                return False
+
+    # Check for company names
+    for company in DISPLAY_COMPANIES:
+        if company in content:
+            return True
+
+    # Check for display keywords
+    keyword_matches = sum(1 for kw in DISPLAY_KEYWORDS if kw in content)
+
+    # Require at least 1 keyword match
+    return keyword_matches >= 1
+
+
+def parse_date(date_str: str) -> str:
+    """Parse various date formats to YYYY-MM-DD."""
+    if not date_str:
+        return date.today().isoformat()
+
+    date_str = date_str.strip()
+
+    # Common formats
+    formats = [
+        '%Y-%m-%d',
+        '%Y.%m.%d',
+        '%Y/%m/%d',
+        '%B %d, %Y',
+        '%b %d, %Y',
+        '%d %B %Y',
+        '%d %b %Y',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%d %H:%M:%S',
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str[:20], fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+
+    # Try to extract date with regex
+    match = re.search(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', date_str)
+    if match:
+        return f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+
+    return date.today().isoformat()
+
+
+def extract_suppliers_from_text(text: str) -> str:
+    """Extract mentioned suppliers from article text."""
+    text_lower = text.lower()
+    suppliers = []
+
+    supplier_map = {
+        'samsung display': 'Samsung',
+        'samsung': 'Samsung',
+        'sdc': 'Samsung',
+        'lg display': 'LGD',
+        'lgd': 'LGD',
+        'boe': 'BOE',
+        'csot': 'CSOT',
+        'tcl csot': 'CSOT',
+        'china star': 'CSOT',
+        'auo': 'AUO',
+        'au optronics': 'AUO',
+        'innolux': 'Innolux',
+        'sharp': 'Sharp',
+        'jdi': 'JDI',
+        'japan display': 'JDI',
+        'tianma': 'Tianma',
+        'visionox': 'Visionox',
+        'everdisplay': 'EDO',
+        'edo': 'EDO'
+    }
+
+    for keyword, supplier in supplier_map.items():
+        if keyword in text_lower and supplier not in suppliers:
+            suppliers.append(supplier)
+
+    return ', '.join(suppliers) if suppliers else None
+
+
+def extract_technologies_from_text(text: str) -> str:
+    """Extract mentioned technologies from article text."""
+    text_lower = text.lower()
+    technologies = []
+
+    tech_map = {
+        'oled': 'OLED',
+        'amoled': 'OLED',
+        'qd-oled': 'QD-OLED',
+        'woled': 'OLED',
+        'lcd': 'LCD',
+        'ltpo': 'LTPO',
+        'microled': 'MicroLED',
+        'micro-led': 'MicroLED',
+        'miniled': 'MiniLED',
+        'mini-led': 'MiniLED',
+        'foldable': 'Foldable',
+        'flexible display': 'Foldable'
+    }
+
+    for keyword, tech in tech_map.items():
+        if keyword in text_lower and tech not in technologies:
+            technologies.append(tech)
+
+    return ', '.join(technologies) if technologies else None
+
+
+def extract_products_from_text(text: str) -> str:
+    """Extract mentioned products from article text."""
+    text_lower = text.lower()
+    products = []
+
+    product_map = {
+        'smartphone': 'Smartphone',
+        'mobile': 'Smartphone',
+        'phone': 'Smartphone',
+        'tablet': 'Tablet',
+        'ipad': 'Tablet',
+        'tv': 'TV',
+        'television': 'TV',
+        'monitor': 'Monitor',
+        'laptop': 'IT',
+        'notebook': 'IT',
+        'it panel': 'IT',
+        'automotive': 'Automotive',
+        'car display': 'Automotive',
+        'vehicle': 'Automotive',
+        'wearable': 'Wearable',
+        'watch': 'Wearable'
+    }
+
+    for keyword, product in product_map.items():
+        if keyword in text_lower and product not in products:
+            products.append(product)
+
+    return ', '.join(products) if products else None
+
+
+def categorize_article(title: str, text: str) -> str:
+    """Categorize article based on content."""
+    content = f"{title} {text}".lower()
+
+    if any(kw in content for kw in ['invest', 'billion', 'million', 'funding', 'capex']):
+        return 'Investment'
+    elif any(kw in content for kw in ['factory', 'fab', 'production', 'mass production', 'facility']):
+        return 'Factory'
+    elif any(kw in content for kw in ['revenue', 'profit', 'earnings', 'quarterly', 'financial']):
+        return 'Financials'
+    elif any(kw in content for kw in ['acquire', 'merger', 'acquisition', 'deal', 'partnership']):
+        return 'M&A'
+    elif any(kw in content for kw in ['supply', 'order', 'shipment', 'demand']):
+        return 'Supply Chain'
+    elif any(kw in content for kw in ['launch', 'release', 'announce', 'new product', 'unveil']):
+        return 'Product Launch'
+    else:
+        return 'Technology'
+
+
+# =============================================================================
+# Scrapers
+# =============================================================================
+
+def get_headers():
+    """Return headers for requests."""
+    return {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+
+
+def scrape_the_elec() -> list:
+    """
+    Scrape The Elec (thelec.net) for display industry news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://thelec.net"
+
+    # Sections to scrape - Display Panel is S1N4
+    urls_to_try = [
+        f"{base_url}/news/articleList.html?sc_section_code=S1N4&view_type=sm",  # Display Panel
+        f"{base_url}/news/articleList.html?sc_section_code=S1N1&view_type=sm",  # Latest Stories
+    ]
+
+    for url in urls_to_try:
+        try:
+            response = requests.get(url, headers=get_headers(), timeout=15)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Find all article links with articleView in href
+            links = soup.select('a[href*="articleView"]')
+
+            for link in links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+
+                    # Skip if no title or too short (likely a "read more" link)
+                    if not title or len(title) < 15:
+                        continue
+
+                    # Skip duplicates
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+
+                    # Build full URL
+                    if href.startswith('/'):
+                        article_url = base_url + href
+                    else:
+                        article_url = href
+
+                    # Find parent element to get more context
+                    parent = link.find_parent(['li', 'div'])
+                    summary = ""
+                    pub_date = date.today().isoformat()
+
+                    if parent:
+                        # Look for summary text
+                        summary_el = parent.select_one('p, .summary, .desc')
+                        if summary_el and summary_el != link:
+                            summary = summary_el.get_text(strip=True)
+
+                        # Look for date
+                        date_el = parent.select_one('em, .date, time, span.dated')
+                        if date_el:
+                            pub_date = parse_date(date_el.get_text(strip=True))
+
+                    # The Elec is focused on display/semiconductor, so most articles are relevant
+                    # But still apply filter for non-display content
+                    if not is_display_relevant(title, summary):
+                        continue
+
+                    articles.append({
+                        'title': title,
+                        'source': 'The Elec',
+                        'source_url': 'https://thelec.net',
+                        'article_url': article_url,
+                        'published_date': pub_date,
+                        'summary': summary[:500] if summary else None,
+                        'suppliers_mentioned': extract_suppliers_from_text(f"{title} {summary}"),
+                        'technologies_mentioned': extract_technologies_from_text(f"{title} {summary}"),
+                        'products_mentioned': extract_products_from_text(f"{title} {summary}"),
+                        'category': categorize_article(title, summary)
+                    })
+
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return articles
+
+
+def scrape_display_daily() -> list:
+    """
+    Scrape Display Daily for display industry news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://displaydaily.com"
+
+    try:
+        response = requests.get(base_url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            return articles
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find article links - Display Daily uses various formats
+        all_links = soup.select('a[href]')
+
+        for link in all_links:
+            try:
+                href = link.get('href', '')
+                title = link.get_text(strip=True)
+
+                # Skip navigation, short titles, and non-article links
+                if not title or len(title) < 20:
+                    continue
+
+                # Must be a displaydaily.com article
+                if not href.startswith(base_url) and not href.startswith('/'):
+                    continue
+
+                # Skip common non-article pages
+                if any(skip in href.lower() for skip in ['about', 'contact', 'privacy', 'category', 'tag', 'author', '#']):
+                    continue
+
+                # Build full URL
+                if href.startswith('/'):
+                    article_url = base_url + href
+                else:
+                    article_url = href
+
+                # Skip duplicates
+                if article_url in seen_urls:
+                    continue
+                seen_urls.add(article_url)
+
+                # Check relevance
+                if not is_display_relevant(title, ""):
+                    continue
+
+                articles.append({
+                    'title': title,
+                    'source': 'Display Daily',
+                    'source_url': base_url,
+                    'article_url': article_url,
+                    'published_date': date.today().isoformat(),
+                    'summary': None,
+                    'suppliers_mentioned': extract_suppliers_from_text(title),
+                    'technologies_mentioned': extract_technologies_from_text(title),
+                    'products_mentioned': extract_products_from_text(title),
+                    'category': categorize_article(title, "")
+                })
+
+            except Exception:
+                continue
+
+    except Exception:
+        pass
+
+    return articles
+
+
+def scrape_korea_times() -> list:
+    """
+    Scrape Korea Times business section for Samsung Display / LG Display news.
+
+    Returns:
+        List of article dicts
+    """
+    articles = []
+    seen_urls = set()
+    base_url = "https://www.koreatimes.co.kr"
+
+    # Scrape business/tech sections
+    urls_to_try = [
+        f"{base_url}/www/biz/",  # Business section
+        f"{base_url}/www/nation/",  # Nation section (sometimes has industry news)
+    ]
+
+    for url in urls_to_try:
+        try:
+            response = requests.get(url, headers=get_headers(), timeout=15)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Find all article links
+            all_links = soup.select('a[href*="/www/"]')
+
+            for link in all_links:
+                try:
+                    href = link.get('href', '')
+                    title = link.get_text(strip=True)
+
+                    # Skip short titles and non-article links
+                    if not title or len(title) < 20:
+                        continue
+
+                    # Must be an article URL with numbers (article IDs)
+                    if not re.search(r'/\d+', href):
+                        continue
+
+                    # Build full URL
+                    if href.startswith('/'):
+                        article_url = base_url + href
+                    elif not href.startswith('http'):
+                        article_url = base_url + '/' + href
+                    else:
+                        article_url = href
+
+                    # Skip duplicates
+                    if article_url in seen_urls:
+                        continue
+                    seen_urls.add(article_url)
+
+                    # Check relevance - Korea Times has general news so filter strictly
+                    if not is_display_relevant(title, ""):
+                        continue
+
+                    articles.append({
+                        'title': title,
+                        'source': 'Korea Times',
+                        'source_url': base_url,
+                        'article_url': article_url,
+                        'published_date': date.today().isoformat(),
+                        'summary': None,
+                        'suppliers_mentioned': extract_suppliers_from_text(title),
+                        'technologies_mentioned': extract_technologies_from_text(title),
+                        'products_mentioned': extract_products_from_text(title),
+                        'category': categorize_article(title, "")
+                    })
+
+                except Exception:
+                    continue
+
+            time.sleep(0.3)  # Be polite between requests
+
+        except Exception:
+            continue
+
+    return articles
+
+
+# =============================================================================
+# Database Functions
+# =============================================================================
+
+def save_articles_to_db(articles: list) -> tuple:
+    """
+    Save articles to database, skipping duplicates.
+
+    Args:
+        articles: List of article dicts
+
+    Returns:
+        Tuple of (saved_count, duplicate_count)
+    """
+    if not articles:
+        return 0, 0
+
+    conn = sqlite3.connect(DB_PATH)
+    saved = 0
+    duplicates = 0
+
+    for article in articles:
+        try:
+            # Check for duplicate by URL
+            cursor = conn.execute(
+                "SELECT id FROM news WHERE article_url = ?",
+                (article['article_url'],)
+            )
+            if cursor.fetchone():
+                duplicates += 1
+                continue
+
+            # Also check by title (in case URL format changed)
+            cursor = conn.execute(
+                "SELECT id FROM news WHERE title = ? AND source = ?",
+                (article['title'], article['source'])
+            )
+            if cursor.fetchone():
+                duplicates += 1
+                continue
+
+            # Insert new article
+            conn.execute("""
+                INSERT INTO news (
+                    title, source, source_url, article_url, published_date,
+                    summary, suppliers_mentioned, technologies_mentioned,
+                    products_mentioned, category, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                article['title'],
+                article['source'],
+                article.get('source_url'),
+                article['article_url'],
+                article.get('published_date'),
+                article.get('summary'),
+                article.get('suppliers_mentioned'),
+                article.get('technologies_mentioned'),
+                article.get('products_mentioned'),
+                article.get('category'),
+                datetime.now().isoformat()
+            ))
+            saved += 1
+
+        except Exception as e:
+            continue
+
+    conn.commit()
+    conn.close()
+
+    return saved, duplicates
+
+
+def scrape_all_korea_sources() -> dict:
+    """
+    Scrape all available sources and save to database.
+
+    Returns:
+        Dict with results summary
+    """
+    results = {
+        'sources': {},
+        'total_scanned': 0,
+        'total_relevant': 0,
+        'total_saved': 0,
+        'total_duplicates': 0
+    }
+
+    # Scrape each source (The Elec is primary Korea source, Display Daily for broader coverage)
+    scrapers = [
+        ('The Elec', scrape_the_elec),
+        ('Display Daily', scrape_display_daily),
+        ('Korea Times', scrape_korea_times)
+    ]
+
+    for source_name, scraper_func in scrapers:
+        try:
+            articles = scraper_func()
+            saved, duplicates = save_articles_to_db(articles)
+
+            results['sources'][source_name] = {
+                'found': len(articles),
+                'saved': saved,
+                'duplicates': duplicates
+            }
+            results['total_relevant'] += len(articles)
+            results['total_saved'] += saved
+            results['total_duplicates'] += duplicates
+
+        except Exception as e:
+            results['sources'][source_name] = {
+                'error': str(e),
+                'found': 0,
+                'saved': 0,
+                'duplicates': 0
+            }
+
+    return results
+
+
+if __name__ == "__main__":
+    # Test the scrapers
+    print("Testing The Elec scraper...")
+    articles = scrape_the_elec()
+    print(f"Found {len(articles)} relevant articles from The Elec")
+    for a in articles[:3]:
+        print(f"  - {a['title'][:60]}...")
+
+    print("\nTesting Display Daily scraper...")
+    articles = scrape_display_daily()
+    print(f"Found {len(articles)} relevant articles from Display Daily")
+    for a in articles[:3]:
+        print(f"  - {a['title'][:60]}...")
+
+    print("\nTesting Korea Times scraper...")
+    articles = scrape_korea_times()
+    print(f"Found {len(articles)} relevant articles from Korea Times")
+    for a in articles[:3]:
+        print(f"  - {a['title'][:60]}...")
