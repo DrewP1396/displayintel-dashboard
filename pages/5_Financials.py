@@ -489,6 +489,7 @@ with tab1:
 with tab2:
     st.markdown("### PDF Extraction")
     st.markdown(f"**PDF Directory:** `{PDF_DIR}`")
+    st.caption(f"Directory exists: {PDF_DIR.exists()}")
 
     pdf_files = scan_pdf_directory()
 
