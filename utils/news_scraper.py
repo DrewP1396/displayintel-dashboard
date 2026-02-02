@@ -627,6 +627,281 @@ def scrape_all_korea_sources() -> dict:
     return results
 
 
+# =============================================================================
+# AI Summary Generation
+# =============================================================================
+
+def get_anthropic_api_key():
+    """Get Anthropic API key from Streamlit secrets or environment."""
+    try:
+        import streamlit as st
+        return st.secrets.get("anthropic_api_key", None)
+    except:
+        pass
+
+    import os
+    return os.environ.get("ANTHROPIC_API_KEY", None)
+
+
+def generate_ai_summary(title: str, full_text: str = None, api_key: str = None) -> str:
+    """
+    Generate AI summary using Claude Haiku.
+
+    Args:
+        title: Article title
+        full_text: Article full text (optional)
+        api_key: Anthropic API key
+
+    Returns:
+        2-3 sentence summary or None if failed
+    """
+    if not api_key:
+        api_key = get_anthropic_api_key()
+
+    if not api_key:
+        return None
+
+    content = title
+    if full_text:
+        content = f"Title: {title}\n\nArticle: {full_text[:2000]}"
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-3-5-20241022",
+                "max_tokens": 150,
+                "messages": [{
+                    "role": "user",
+                    "content": f"""Summarize this display industry news article in 2-3 sentences. Focus on the key business impact for display panel manufacturers.
+
+{content}
+
+Summary:"""
+                }]
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            return data['content'][0]['text'].strip()
+
+    except Exception:
+        pass
+
+    return None
+
+
+def analyze_sentiment(title: str, text: str = "") -> str:
+    """
+    Analyze sentiment based on keywords.
+
+    Args:
+        title: Article title
+        text: Article text
+
+    Returns:
+        'Positive', 'Negative', 'Neutral', or 'Mixed'
+    """
+    content = f"{title} {text}".lower()
+
+    positive_keywords = [
+        'growth', 'profit', 'surge', 'increase', 'expand', 'investment',
+        'breakthrough', 'success', 'milestone', 'record', 'win', 'gains',
+        'strong', 'recovery', 'improve', 'boost', 'advance', 'innovation',
+        'partnership', 'deal', 'order', 'contract', 'launch', 'ramp'
+    ]
+
+    negative_keywords = [
+        'loss', 'decline', 'drop', 'fall', 'cut', 'layoff', 'closure',
+        'halt', 'delay', 'problem', 'issue', 'concern', 'risk', 'weak',
+        'slowdown', 'downturn', 'struggle', 'challenge', 'crisis', 'fail',
+        'shortage', 'deficit', 'warning', 'suspend'
+    ]
+
+    positive_count = sum(1 for kw in positive_keywords if kw in content)
+    negative_count = sum(1 for kw in negative_keywords if kw in content)
+
+    if positive_count > 0 and negative_count > 0:
+        if positive_count > negative_count * 2:
+            return 'Positive'
+        elif negative_count > positive_count * 2:
+            return 'Negative'
+        return 'Mixed'
+    elif positive_count > 0:
+        return 'Positive'
+    elif negative_count > 0:
+        return 'Negative'
+    else:
+        return 'Neutral'
+
+
+def fetch_article_content(url: str) -> str:
+    """
+    Fetch full article content from URL.
+
+    Args:
+        url: Article URL
+
+    Returns:
+        Article text content or empty string
+    """
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Remove script and style elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            element.decompose()
+
+        # Try common article content selectors
+        content_selectors = [
+            'article', '.article-content', '.article-body', '#article-content',
+            '.post-content', '.entry-content', '.content-body', 'main'
+        ]
+
+        for selector in content_selectors:
+            content = soup.select_one(selector)
+            if content:
+                text = content.get_text(separator=' ', strip=True)
+                if len(text) > 200:
+                    return text[:5000]
+
+        # Fallback: get all paragraph text
+        paragraphs = soup.select('p')
+        text = ' '.join(p.get_text(strip=True) for p in paragraphs)
+        return text[:5000] if text else ""
+
+    except Exception:
+        return ""
+
+
+def update_article_with_ai(article_id: int, api_key: str = None) -> dict:
+    """
+    Update a single article with AI summary and enhanced tags.
+
+    Args:
+        article_id: Database article ID
+        api_key: Anthropic API key
+
+    Returns:
+        Dict with update results
+    """
+    conn = sqlite3.connect(DB_PATH)
+
+    # Get article
+    cursor = conn.execute(
+        "SELECT title, article_url, full_text, summary FROM news WHERE id = ?",
+        (article_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {'error': 'Article not found'}
+
+    title, url, full_text, existing_summary = row
+    results = {'id': article_id, 'title': title[:50]}
+
+    # Fetch content if needed
+    if not full_text:
+        full_text = fetch_article_content(url)
+        if full_text:
+            conn.execute(
+                "UPDATE news SET full_text = ? WHERE id = ?",
+                (full_text, article_id)
+            )
+            results['fetched_content'] = True
+
+    # Generate AI summary if missing
+    if not existing_summary and api_key:
+        summary = generate_ai_summary(title, full_text, api_key)
+        if summary:
+            conn.execute(
+                "UPDATE news SET summary = ? WHERE id = ?",
+                (summary, article_id)
+            )
+            results['generated_summary'] = True
+
+    # Update sentiment
+    content = f"{title} {full_text or ''}"
+    sentiment = analyze_sentiment(title, full_text or "")
+    conn.execute(
+        "UPDATE news SET sentiment = ? WHERE id = ?",
+        (sentiment, article_id)
+    )
+    results['sentiment'] = sentiment
+
+    # Update supplier/tech/product tags from full content
+    suppliers = extract_suppliers_from_text(content)
+    technologies = extract_technologies_from_text(content)
+    products = extract_products_from_text(content)
+
+    conn.execute("""
+        UPDATE news SET
+            suppliers_mentioned = COALESCE(?, suppliers_mentioned),
+            technologies_mentioned = COALESCE(?, technologies_mentioned),
+            products_mentioned = COALESCE(?, products_mentioned)
+        WHERE id = ?
+    """, (suppliers, technologies, products, article_id))
+
+    conn.commit()
+    conn.close()
+
+    return results
+
+
+def update_all_articles_with_ai(api_key: str = None) -> dict:
+    """
+    Update all articles with AI summaries and enhanced tags.
+
+    Args:
+        api_key: Anthropic API key
+
+    Returns:
+        Dict with summary of updates
+    """
+    conn = sqlite3.connect(DB_PATH)
+
+    # Get articles needing updates
+    cursor = conn.execute("""
+        SELECT id, title FROM news
+        WHERE summary IS NULL OR sentiment IS NULL
+        ORDER BY published_date DESC
+        LIMIT 50
+    """)
+    articles = cursor.fetchall()
+    conn.close()
+
+    results = {
+        'total': len(articles),
+        'summaries_generated': 0,
+        'sentiments_updated': 0,
+        'errors': 0
+    }
+
+    for article_id, title in articles:
+        try:
+            update_result = update_article_with_ai(article_id, api_key)
+            if update_result.get('generated_summary'):
+                results['summaries_generated'] += 1
+            if update_result.get('sentiment'):
+                results['sentiments_updated'] += 1
+            time.sleep(0.5)  # Rate limiting
+        except Exception:
+            results['errors'] += 1
+
+    return results
+
+
 if __name__ == "__main__":
     # Test the scrapers
     print("Testing The Elec scraper...")
