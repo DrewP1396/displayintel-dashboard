@@ -829,3 +829,4 @@ else:
 
         else:
             st.info("No capacity data available for the selected date range.")
+
