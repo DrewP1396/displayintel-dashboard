@@ -394,6 +394,87 @@ class DatabaseManager:
             cursor = conn.execute(query)
             return {row[0]: row[1] for row in cursor.fetchall()}
 
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_capacity_by_backplane(
+        manufacturer: Optional[str] = None,
+        factory_name: Optional[str] = None,
+        date: Optional[str] = None
+    ) -> pd.DataFrame:
+        """Get capacity breakdown by backplane technology.
+
+        If factory_name provided, gets capacity for that factory and related lines.
+        Otherwise gets total capacity by backplane for manufacturer or all.
+        """
+        # Use latest non-projection date if not specified
+        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0)"
+        if date:
+            date_clause = "u.date = ?"
+
+        query = f"""
+            SELECT
+                f.manufacturer,
+                f.factory_name,
+                f.backplane,
+                f.technology,
+                f.generation,
+                u.capacity_ksheets,
+                u.actual_input_ksheets,
+                u.utilization_pct,
+                u.date
+            FROM factories f
+            JOIN utilization u ON f.factory_id = u.factory_id
+            WHERE {date_clause}
+        """
+        params = []
+        if date:
+            params.append(date)
+
+        if manufacturer and manufacturer != "All":
+            query += " AND f.manufacturer = ?"
+            params.append(manufacturer)
+
+        if factory_name:
+            # Get the base factory name (e.g., "A3" from "A3" or "A4" from "A4 (L7-1)")
+            base_name = factory_name.split('(')[0].strip().split('_')[0].strip()
+            query += " AND (f.factory_name = ? OR f.factory_name LIKE ?)"
+            params.append(factory_name)
+            params.append(f"{base_name}%")
+
+        query += " ORDER BY f.manufacturer, f.factory_name, f.backplane"
+
+        with get_connection() as conn:
+            return pd.read_sql_query(query, conn, params=params)
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_total_capacity_by_backplane(date: Optional[str] = None) -> pd.DataFrame:
+        """Get total industry capacity grouped by backplane technology."""
+        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0)"
+        params = []
+        if date:
+            date_clause = "u.date = ?"
+            params.append(date)
+
+        query = f"""
+            SELECT
+                f.backplane,
+                f.technology,
+                SUM(u.capacity_ksheets) as total_capacity_k,
+                SUM(u.actual_input_ksheets) as total_input_k,
+                AVG(u.utilization_pct) as avg_utilization,
+                COUNT(DISTINCT f.factory_id) as num_factories
+            FROM factories f
+            JOIN utilization u ON f.factory_id = u.factory_id
+            WHERE {date_clause}
+            AND f.backplane IS NOT NULL
+            GROUP BY f.backplane, f.technology
+            ORDER BY total_capacity_k DESC
+        """
+
+        with get_connection() as conn:
+            return pd.read_sql_query(query, conn, params=params)
+
     # Summary statistics
     @staticmethod
     @st.cache_data(ttl=300)

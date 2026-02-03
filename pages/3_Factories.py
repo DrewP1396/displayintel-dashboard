@@ -158,19 +158,79 @@ if selected_factory != "All Factories":
 
         with col1:
             st.metric("Factory ID", factory_id or "-")
-            st.metric("Technology", factory.get('technology', '-') or "-")
+            st.metric("Generation", factory.get('generation', '-') or "-")
 
         with col2:
             st.metric("Location", factory.get('location', '-') or "-")
-            st.metric("Generation", factory.get('generation', '-') or "-")
+            st.metric("Technology", factory.get('technology', '-') or "-")
 
         with col3:
             st.metric("Region", factory.get('region', '-') or "-")
-            st.metric("Application", factory.get('application_category', '-') or "-")
+            st.metric("Backplane", factory.get('backplane', '-') or "-")
 
         with col4:
             st.metric("Status", (factory.get('status', '-') or "-").title())
             st.metric("Ramp Date", ramp_date or "Not yet")
+
+        st.divider()
+
+        # Capacity by Backplane Technology
+        st.markdown("### Capacity by Backplane Technology")
+
+        # Get capacity data for this factory and related production lines
+        backplane_df = DatabaseManager.get_capacity_by_backplane(
+            manufacturer=factory.get('manufacturer'),
+            factory_name=selected_factory
+        )
+
+        if len(backplane_df) > 0:
+            # Group by backplane and sum capacity
+            bp_summary = backplane_df.groupby('backplane').agg({
+                'capacity_ksheets': 'sum',
+                'actual_input_ksheets': 'sum',
+                'factory_name': 'count'
+            }).reset_index()
+            bp_summary.columns = ['Backplane', 'Capacity (K/mo)', 'Input (K/mo)', 'Lines']
+
+            # Calculate total
+            total_capacity = bp_summary['Capacity (K/mo)'].sum()
+            total_input = bp_summary['Input (K/mo)'].sum()
+
+            # Display metrics
+            cols = st.columns(len(bp_summary) + 1)
+
+            # Total column
+            with cols[0]:
+                st.metric("Total Capacity", f"{total_capacity:,.1f}K/mo")
+
+            # Per-backplane columns
+            for i, row in bp_summary.iterrows():
+                with cols[i + 1]:
+                    bp_name = row['Backplane'] or 'Unknown'
+                    st.metric(f"{bp_name}", f"{row['Capacity (K/mo)']:,.1f}K/mo")
+
+            # Show detailed breakdown table
+            with st.expander("View Production Lines"):
+                bp_display = backplane_df[['factory_name', 'backplane', 'generation', 'capacity_ksheets', 'actual_input_ksheets', 'utilization_pct']].copy()
+                bp_display['capacity_ksheets'] = bp_display['capacity_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+                bp_display['actual_input_ksheets'] = bp_display['actual_input_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+                bp_display['utilization_pct'] = bp_display['utilization_pct'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+
+                st.dataframe(
+                    bp_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "factory_name": st.column_config.TextColumn("Line", width="medium"),
+                        "backplane": st.column_config.TextColumn("Backplane", width="small"),
+                        "generation": st.column_config.TextColumn("Gen", width="small"),
+                        "capacity_ksheets": st.column_config.TextColumn("Capacity (K/mo)", width="small"),
+                        "actual_input_ksheets": st.column_config.TextColumn("Input (K/mo)", width="small"),
+                        "utilization_pct": st.column_config.TextColumn("Util %", width="small")
+                    }
+                )
+        else:
+            st.info("No capacity data available.")
 
         st.divider()
 
