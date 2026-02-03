@@ -127,15 +127,25 @@ colors = theme['color_discrete_sequence']
 # Factory Detail View (when specific factory is selected)
 # =============================================================================
 if selected_factory != "All Factories":
-    # Get factory data
+    # Get factory data (may have multiple entries for different backplanes)
     factory_df = DatabaseManager.get_factory_by_name(selected_factory)
 
     if factory_df is not None and len(factory_df) > 0:
+        # Use first entry for general info
         factory = factory_df.iloc[0]
-        factory_id = factory.get('factory_id', '')
 
-        # Get ramp date
-        ramp_date = DatabaseManager.get_factory_ramp_date(factory_id)
+        # Get all backplane types for this factory
+        backplanes = factory_df['backplane'].dropna().unique().tolist()
+        backplane_str = ", ".join(backplanes) if backplanes else "-"
+
+        # Get ramp date from earliest entry
+        ramp_dates = []
+        for _, row in factory_df.iterrows():
+            fid = row.get('factory_id', '')
+            rd = DatabaseManager.get_factory_ramp_date(fid)
+            if rd:
+                ramp_dates.append(rd)
+        ramp_date = min(ramp_dates) if ramp_dates else None
 
         # Header with back context
         tech = factory.get('technology', 'Unknown') or 'Unknown'
@@ -157,7 +167,7 @@ if selected_factory != "All Factories":
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric("Factory ID", factory_id or "-")
+            st.metric("Factory", selected_factory)
             st.metric("Generation", factory.get('generation', '-') or "-")
 
         with col2:
@@ -166,11 +176,11 @@ if selected_factory != "All Factories":
 
         with col3:
             st.metric("Region", factory.get('region', '-') or "-")
-            st.metric("Backplane", factory.get('backplane', '-') or "-")
+            st.metric("Backplanes", backplane_str)
 
         with col4:
             st.metric("Status", (factory.get('status', '-') or "-").title())
-            st.metric("Ramp Date", ramp_date or "Not yet")
+            st.metric("First Ramp", ramp_date or "Not yet")
 
         st.divider()
 
@@ -234,45 +244,56 @@ if selected_factory != "All Factories":
 
         st.divider()
 
-        # Get utilization data for this factory
+        # Get utilization data for this factory (all backplane variants)
         util_df = DatabaseManager.get_utilization(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
-            factory_id=factory_id
+            factory_name=selected_factory
         )
 
-        # Current metrics from latest utilization
+        # Current metrics from latest utilization (aggregated across backplanes)
         if len(util_df) > 0:
-            latest_util = util_df.sort_values('date', ascending=False).iloc[0]
+            latest_date = util_df['date'].max()
+            latest_data = util_df[util_df['date'] == latest_date]
+
+            total_capacity = latest_data['capacity_ksheets'].sum()
+            total_input = latest_data['actual_input_ksheets'].sum()
+            avg_util = (total_input / total_capacity * 100) if total_capacity > 0 else 0
 
             col1, col2, col3 = st.columns(3)
             with col1:
-                current_util = latest_util.get('utilization_pct', 0)
-                st.metric("Current Utilization", f"{current_util:.1f}%" if current_util else "-")
+                st.metric("Current Utilization", f"{avg_util:.1f}%")
             with col2:
-                capacity = latest_util.get('capacity_ksheets', 0)
-                st.metric("Capacity (K/month)", f"{capacity:,.1f}" if capacity else "-")
+                st.metric("Total Capacity (K/mo)", f"{total_capacity:,.1f}")
             with col3:
-                input_sheets = latest_util.get('actual_input_ksheets', 0)
-                st.metric("Input (K/month)", f"{input_sheets:,.1f}" if input_sheets else "-")
+                st.metric("Total Input (K/mo)", f"{total_input:,.1f}")
 
             st.divider()
 
-            # Utilization Timeline
-            st.markdown("### Utilization Timeline")
+            # Utilization Timeline by Backplane
+            st.markdown("### Utilization Timeline by Backplane")
 
             fig = go.Figure()
 
-            # Main utilization line
-            fig.add_trace(go.Scatter(
-                x=util_df['date'].tolist(),
-                y=util_df['utilization_pct'].tolist(),
-                mode='lines+markers',
-                name='Utilization %',
-                line=dict(color=colors[0], width=2),
-                marker=dict(size=6),
-                hovertemplate='%{x}<br>Utilization: %{y:.1f}%<extra></extra>'
-            ))
+            # Group by date and backplane
+            backplanes_in_data = util_df['backplane'].dropna().unique()
+
+            for i, bp in enumerate(backplanes_in_data):
+                bp_data = util_df[util_df['backplane'] == bp].groupby('date').agg({
+                    'capacity_ksheets': 'sum',
+                    'actual_input_ksheets': 'sum'
+                }).reset_index()
+                bp_data['utilization_pct'] = (bp_data['actual_input_ksheets'] / bp_data['capacity_ksheets'] * 100)
+
+                fig.add_trace(go.Scatter(
+                    x=bp_data['date'].tolist(),
+                    y=bp_data['utilization_pct'].tolist(),
+                    mode='lines+markers',
+                    name=f'{bp}',
+                    line=dict(color=colors[i % len(colors)], width=2),
+                    marker=dict(size=6),
+                    hovertemplate=f'{bp}<br>%{{x}}<br>Utilization: %{{y:.1f}}%<extra></extra>'
+                ))
 
             # Add ramp date annotation if available
             if ramp_date and ramp_date in util_df['date'].values:

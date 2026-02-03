@@ -62,11 +62,12 @@ class DatabaseManager:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         factory_id: Optional[str] = None,
+        factory_name: Optional[str] = None,
         manufacturer: Optional[str] = None
     ) -> pd.DataFrame:
         """Get utilization data with optional filters."""
         query = """
-            SELECT u.*, f.manufacturer, f.factory_name, f.technology, f.region
+            SELECT u.*, f.manufacturer, f.factory_name, f.technology, f.region, f.backplane
             FROM utilization u
             JOIN factories f ON u.factory_id = f.factory_id
             WHERE 1=1
@@ -82,11 +83,14 @@ class DatabaseManager:
         if factory_id:
             query += " AND u.factory_id = ?"
             params.append(factory_id)
+        if factory_name:
+            query += " AND f.factory_name = ?"
+            params.append(factory_name)
         if manufacturer and manufacturer != "All":
             query += " AND f.manufacturer = ?"
             params.append(manufacturer)
 
-        query += " ORDER BY u.date, f.manufacturer"
+        query += " ORDER BY u.date, f.manufacturer, f.backplane"
 
         with get_connection() as conn:
             return pd.read_sql_query(query, conn, params=params)
@@ -330,7 +334,7 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=600)
     def get_factory_names(manufacturer: Optional[str] = None) -> List[str]:
-        """Get list of factory names optionally filtered by manufacturer."""
+        """Get list of unique factory names optionally filtered by manufacturer."""
         query = """
             SELECT DISTINCT factory_name FROM factories
             WHERE factory_name IS NOT NULL
@@ -343,13 +347,15 @@ class DatabaseManager:
 
         with get_connection() as conn:
             cursor = conn.execute(query, params)
-            return ["All Factories"] + [row[0] for row in cursor.fetchall() if row[0]]
+            # Get unique factory names (since we now have multiple entries per factory for different backplanes)
+            names = sorted(set([row[0] for row in cursor.fetchall() if row[0]]))
+            return ["All Factories"] + names
 
     @staticmethod
     @st.cache_data(ttl=300)
     def get_factory_by_name(factory_name: str) -> Optional[pd.DataFrame]:
-        """Get a single factory by name."""
-        query = "SELECT * FROM factories WHERE factory_name = ?"
+        """Get all factory entries by name (may have multiple backplane variants)."""
+        query = "SELECT * FROM factories WHERE factory_name = ? ORDER BY backplane"
         with get_connection() as conn:
             df = pd.read_sql_query(query, conn, params=[factory_name])
             return df if len(df) > 0 else None
@@ -406,8 +412,8 @@ class DatabaseManager:
         If factory_name provided, gets capacity for that factory and related lines.
         Otherwise gets total capacity by backplane for manufacturer or all.
         """
-        # Use latest non-projection date if not specified
-        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0)"
+        # Use latest date with actual input data if not specified
+        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0 AND actual_input_ksheets > 0)"
         if date:
             date_clause = "u.date = ?"
 
@@ -450,7 +456,7 @@ class DatabaseManager:
     @st.cache_data(ttl=300)
     def get_total_capacity_by_backplane(date: Optional[str] = None) -> pd.DataFrame:
         """Get total industry capacity grouped by backplane technology."""
-        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0)"
+        date_clause = "u.date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0 AND actual_input_ksheets > 0)"
         params = []
         if date:
             date_clause = "u.date = ?"
