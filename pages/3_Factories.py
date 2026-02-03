@@ -59,26 +59,43 @@ with st.sidebar:
         key="factory_manufacturer"
     )
 
-    technology = st.selectbox(
-        "Technology",
-        options=DatabaseManager.get_technologies(),
-        key="factory_technology"
-    )
-
-    region = st.selectbox(
-        "Region",
-        options=DatabaseManager.get_regions(),
-        key="factory_region"
-    )
-
-    status_options = ["All", "operating", "constructing", "planned", "closed"]
-    status = st.selectbox(
-        "Status",
-        options=status_options,
-        key="factory_status"
+    # Factory-specific filter (depends on manufacturer selection)
+    factory_options = DatabaseManager.get_factory_names(manufacturer)
+    selected_factory = st.selectbox(
+        "Factory",
+        options=factory_options,
+        key="factory_specific"
     )
 
     st.divider()
+
+    # Only show these filters in "All Factories" view
+    if selected_factory == "All Factories":
+        technology = st.selectbox(
+            "Technology",
+            options=DatabaseManager.get_technologies(),
+            key="factory_technology"
+        )
+
+        region = st.selectbox(
+            "Region",
+            options=DatabaseManager.get_regions(),
+            key="factory_region"
+        )
+
+        status_options = ["All", "operating", "constructing", "planned", "closed"]
+        status = st.selectbox(
+            "Status",
+            options=status_options,
+            key="factory_status"
+        )
+
+        st.divider()
+    else:
+        # Set defaults when viewing specific factory
+        technology = "All"
+        region = "All"
+        status = "All"
 
     # Date range for utilization
     st.markdown("### Utilization Date Range")
@@ -102,407 +119,605 @@ with st.sidebar:
             key="util_end"
         )
 
-# Main content tabs
-tab1, tab2, tab3 = st.tabs(["Factory Database", "Utilization Analysis", "Capacity Overview"])
-
 # Get theme colors
 theme = get_plotly_theme()
 colors = theme['color_discrete_sequence']
 
-# Tab 1: Factory Database
-with tab1:
-    # Load factory data
-    try:
-        factories_df = DatabaseManager.get_factories(
-            manufacturer=manufacturer,
-            technology=technology,
-            region=region,
-            status=status
-        )
-    except Exception as e:
-        st.error(f"Error loading factory data: {str(e)}")
-        st.stop()
+# =============================================================================
+# Factory Detail View (when specific factory is selected)
+# =============================================================================
+if selected_factory != "All Factories":
+    # Get factory data
+    factory_df = DatabaseManager.get_factory_by_name(selected_factory)
 
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
+    if factory_df is not None and len(factory_df) > 0:
+        factory = factory_df.iloc[0]
+        factory_id = factory.get('factory_id', '')
 
-    with col1:
-        st.metric("Total Factories", format_with_commas(len(factories_df)))
+        # Get ramp date
+        ramp_date = DatabaseManager.get_factory_ramp_date(factory_id)
 
-    with col2:
-        operating = len(factories_df[factories_df['status'] == 'operating'])
-        st.metric("Operating", format_with_commas(operating))
+        # Header with back context
+        st.markdown(f"""
+            <div style="margin-bottom: 1rem;">
+                <span style="color: #86868B; font-size: 0.9rem;">
+                    {factory.get('manufacturer', 'Unknown')} &gt; {selected_factory}
+                </span>
+            </div>
+        """, unsafe_allow_html=True)
 
-    with col3:
-        unique_mfrs = factories_df['manufacturer'].nunique()
-        st.metric("Manufacturers", format_with_commas(unique_mfrs))
+        # Factory Summary Card
+        st.markdown("### Factory Summary")
 
-    with col4:
-        unique_regions = factories_df['region'].nunique()
-        st.metric("Regions", format_with_commas(unique_regions))
+        col1, col2, col3, col4 = st.columns(4)
 
-    st.divider()
+        with col1:
+            st.metric("Factory ID", factory_id or "-")
+            st.metric("Technology", factory.get('technology', '-') or "-")
 
-    # Charts row
-    col1, col2 = st.columns(2)
+        with col2:
+            st.metric("Location", factory.get('location', '-') or "-")
+            st.metric("Generation", factory.get('generation', '-') or "-")
 
-    with col1:
-        st.markdown("#### Factories by Manufacturer")
-        # Filter out NULL/empty values and get counts
-        mfr_data = factories_df[factories_df['manufacturer'].notna() & (factories_df['manufacturer'] != '')]
-        mfr_counts = mfr_data['manufacturer'].value_counts().head(15)
+        with col3:
+            st.metric("Region", factory.get('region', '-') or "-")
+            st.metric("Application", factory.get('application_category', '-') or "-")
 
-        if len(mfr_counts) > 0:
-            fig = px.bar(
-                x=mfr_counts.values.tolist(),
-                y=mfr_counts.index.tolist(),
-                orientation='h',
-                labels={'x': 'Number of Factories', 'y': 'Manufacturer'}
-            )
-            fig.update_traces(marker_color=colors[0], hovertemplate='%{y}: %{x} factories<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                showlegend=False,
-                xaxis_title="Number of Factories",
-                yaxis_title="",
-                height=400
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No manufacturer data available")
+        with col4:
+            st.metric("Status", (factory.get('status', '-') or "-").title())
+            st.metric("Ramp Date", ramp_date or "Not yet")
 
-    with col2:
-        st.markdown("#### Factories by Technology")
-        # Filter out NULL/empty values
-        tech_data = factories_df[factories_df['technology'].notna() & (factories_df['technology'] != '')]
-        tech_counts = tech_data['technology'].value_counts()
+        st.divider()
 
-        if len(tech_counts) > 0:
-            fig = px.pie(
-                values=tech_counts.values.tolist(),
-                names=tech_counts.index.tolist(),
-                color_discrete_sequence=colors,
-                hole=0.4
-            )
-            fig.update_traces(hovertemplate='%{label}: %{value} factories (%{percent})<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No technology data available")
-
-    st.divider()
-
-    # Data table
-    st.markdown("#### Factory Database")
-
-    # Select display columns and add ramp_date if available
-    display_cols = [
-        'factory_id', 'manufacturer', 'factory_name', 'location', 'region',
-        'technology', 'generation', 'application_category', 'status', 'ramp_date'
-    ]
-    available_cols = [c for c in display_cols if c in factories_df.columns]
-
-    # Sort naturally by factory_name
-    display_df = factories_df[available_cols].copy()
-    if 'factory_name' in display_df.columns:
-        display_df = display_df.iloc[display_df['factory_name'].map(natural_sort_key).argsort()]
-
-    column_config = {
-        "factory_id": st.column_config.TextColumn("Factory ID", width="medium"),
-        "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
-        "factory_name": st.column_config.TextColumn("Factory Name", width="medium"),
-        "location": st.column_config.TextColumn("Location", width="medium"),
-        "region": st.column_config.TextColumn("Region", width="small"),
-        "technology": st.column_config.TextColumn("Tech", width="small"),
-        "generation": st.column_config.TextColumn("Gen", width="small"),
-        "application_category": st.column_config.TextColumn("Application", width="small"),
-        "status": st.column_config.TextColumn("Status", width="small")
-    }
-
-    if 'ramp_date' in available_cols:
-        column_config["ramp_date"] = st.column_config.TextColumn("Ramp Date", width="small")
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        height=400,
-        column_config=column_config
-    )
-
-    # Export buttons
-    st.markdown("<br>", unsafe_allow_html=True)
-    create_download_buttons(factories_df, "factories", "Factory Database Report")
-
-
-# Tab 2: Utilization Analysis
-with tab2:
-    # Load utilization data
-    try:
+        # Get utilization data for this factory
         util_df = DatabaseManager.get_utilization(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
-            manufacturer=manufacturer if manufacturer != "All" else None
+            factory_id=factory_id
         )
-    except Exception as e:
-        st.error(f"Error loading utilization data: {str(e)}")
-        st.stop()
 
-    if len(util_df) > 0:
+        # Current metrics from latest utilization
+        if len(util_df) > 0:
+            latest_util = util_df.sort_values('date', ascending=False).iloc[0]
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                current_util = latest_util.get('utilization_pct', 0)
+                st.metric("Current Utilization", f"{current_util:.1f}%" if current_util else "-")
+            with col2:
+                capacity = latest_util.get('capacity_ksheets', 0)
+                st.metric("Current Capacity", f"{format_with_commas(capacity)}K sheets" if capacity else "-")
+            with col3:
+                input_sheets = latest_util.get('actual_input_ksheets', 0)
+                st.metric("Current Input", f"{format_with_commas(input_sheets)}K sheets" if input_sheets else "-")
+
+            st.divider()
+
+            # Utilization Timeline
+            st.markdown("### Utilization Timeline")
+
+            fig = go.Figure()
+
+            # Main utilization line
+            fig.add_trace(go.Scatter(
+                x=util_df['date'].tolist(),
+                y=util_df['utilization_pct'].tolist(),
+                mode='lines+markers',
+                name='Utilization %',
+                line=dict(color=colors[0], width=2),
+                marker=dict(size=6),
+                hovertemplate='%{x}<br>Utilization: %{y:.1f}%<extra></extra>'
+            ))
+
+            # Add ramp date annotation if available
+            if ramp_date and ramp_date in util_df['date'].values:
+                fig.add_vline(
+                    x=ramp_date,
+                    line_dash="dash",
+                    line_color="green",
+                    annotation_text="First Ramp",
+                    annotation_position="top"
+                )
+
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Utilization (%)",
+                height=400,
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Capacity and Input Chart
+            st.markdown("### Capacity vs Actual Input")
+
+            fig2 = go.Figure()
+
+            fig2.add_trace(go.Bar(
+                x=util_df['date'].tolist(),
+                y=util_df['capacity_ksheets'].tolist(),
+                name='Capacity',
+                marker_color=colors[0],
+                opacity=0.7,
+                hovertemplate='Capacity: %{y:,.0f}K<extra></extra>'
+            ))
+
+            fig2.add_trace(go.Scatter(
+                x=util_df['date'].tolist(),
+                y=util_df['actual_input_ksheets'].tolist(),
+                mode='lines+markers',
+                name='Actual Input',
+                line=dict(color=colors[1], width=2),
+                hovertemplate='Input: %{y:,.0f}K<extra></extra>'
+            ))
+
+            apply_chart_theme(fig2)
+            fig2.update_layout(
+                xaxis_title="Date",
+                yaxis_title="K Sheets",
+                height=350,
+                barmode='overlay',
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig2, use_container_width=True)
+
+        else:
+            st.info("No utilization data available for this factory in the selected date range.")
+
+        st.divider()
+
+        # Equipment Orders for this factory
+        st.markdown("### Equipment Orders")
+
+        equip_df = DatabaseManager.get_equipment_orders_for_factory(factory_id)
+
+        if len(equip_df) > 0:
+            # Summary metrics
+            total_orders = len(equip_df)
+            total_value = equip_df['amount_usd'].sum() if 'amount_usd' in equip_df.columns else 0
+            total_units = equip_df['units'].sum() if 'units' in equip_df.columns else 0
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Orders", format_with_commas(total_orders))
+            with col2:
+                if total_value and total_value > 0:
+                    st.metric("Total Value", f"${total_value/1e6:.1f}M" if total_value < 1e9 else f"${total_value/1e9:.2f}B")
+                else:
+                    st.metric("Total Value", "-")
+            with col3:
+                st.metric("Total Units", format_with_commas(total_units) if total_units else "-")
+
+            # Equipment orders table
+            display_cols = ['po_year', 'po_quarter', 'vendor', 'equipment_type', 'units', 'amount_usd']
+            available_cols = [c for c in display_cols if c in equip_df.columns]
+
+            st.dataframe(
+                equip_df[available_cols].head(100),
+                use_container_width=True,
+                hide_index=True,
+                height=300,
+                column_config={
+                    "po_year": st.column_config.NumberColumn("Year", format="%d"),
+                    "po_quarter": st.column_config.TextColumn("Quarter", width="small"),
+                    "vendor": st.column_config.TextColumn("Vendor", width="medium"),
+                    "equipment_type": st.column_config.TextColumn("Equipment Type", width="medium"),
+                    "units": st.column_config.NumberColumn("Units", format="%d"),
+                    "amount_usd": st.column_config.NumberColumn("Value (USD)", format="$%,.0f")
+                }
+            )
+        else:
+            st.info("No equipment orders found for this factory.")
+
+    else:
+        st.error(f"Factory '{selected_factory}' not found.")
+
+else:
+    # =============================================================================
+    # All Factories View (original tabs)
+    # =============================================================================
+
+    # Main content tabs
+    tab1, tab2, tab3 = st.tabs(["Factory Database", "Utilization Analysis", "Capacity Overview"])
+
+    # Tab 1: Factory Database
+    with tab1:
+        # Load factory data
+        try:
+            factories_df = DatabaseManager.get_factories(
+                manufacturer=manufacturer,
+                technology=technology,
+                region=region,
+                status=status
+            )
+        except Exception as e:
+            st.error(f"Error loading factory data: {str(e)}")
+            st.stop()
+
+        # Add ramp dates to factories
+        ramp_dates = DatabaseManager.get_all_factory_ramp_dates()
+        factories_df['ramp_date'] = factories_df['factory_id'].map(ramp_dates)
+
         # Summary metrics
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            avg_util = util_df['utilization_pct'].mean()
-            st.metric("Avg Utilization", format_percent(avg_util))
+            st.metric("Total Factories", format_with_commas(len(factories_df)))
 
         with col2:
-            max_util = util_df['utilization_pct'].max()
-            st.metric("Max Utilization", format_percent(max_util))
+            operating = len(factories_df[factories_df['status'] == 'operating'])
+            st.metric("Operating", format_with_commas(operating))
 
         with col3:
-            total_capacity = util_df.groupby('date')['capacity_ksheets'].sum().mean()
-            st.metric("Avg Capacity", f"{format_with_commas(total_capacity)}K sheets")
+            unique_mfrs = factories_df['manufacturer'].nunique()
+            st.metric("Manufacturers", format_with_commas(unique_mfrs))
 
         with col4:
-            factories_count = util_df['factory_id'].nunique()
-            st.metric("Factories Tracked", format_with_commas(factories_count))
+            unique_regions = factories_df['region'].nunique()
+            st.metric("Regions", format_with_commas(unique_regions))
 
         st.divider()
 
-        # Utilization over time
-        st.markdown("#### Utilization Trends Over Time")
-
-        util_by_date = util_df.groupby('date').agg({
-            'utilization_pct': 'mean',
-            'capacity_ksheets': 'sum',
-            'actual_input_ksheets': 'sum'
-        }).reset_index()
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=util_by_date['date'].tolist(),
-            y=util_by_date['utilization_pct'].tolist(),
-            mode='lines+markers',
-            name='Utilization %',
-            line=dict(color=colors[0], width=2),
-            marker=dict(size=6),
-            hovertemplate='%{x}<br>Utilization: %{y:.1f}%<extra></extra>'
-        ))
-
-        apply_chart_theme(fig)
-        fig.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Utilization (%)",
-            height=400,
-            hovermode='x unified'
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Utilization by manufacturer
+        # Charts row
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("#### Utilization by Manufacturer")
+            st.markdown("#### Factories by Manufacturer")
+            # Filter out NULL/empty values and get counts
+            mfr_data = factories_df[factories_df['manufacturer'].notna() & (factories_df['manufacturer'] != '')]
+            mfr_counts = mfr_data['manufacturer'].value_counts().head(15)
 
-            # Filter out NULL/empty manufacturers
-            util_mfr_df = util_df[util_df['manufacturer'].notna() & (util_df['manufacturer'] != '')]
-            util_by_mfr = util_mfr_df.groupby('manufacturer')['utilization_pct'].mean().sort_values(ascending=True)
-
-            if len(util_by_mfr) > 0:
+            if len(mfr_counts) > 0:
                 fig = px.bar(
-                    x=util_by_mfr.values.tolist(),
-                    y=util_by_mfr.index.tolist(),
-                    orientation='h'
+                    x=mfr_counts.values.tolist(),
+                    y=mfr_counts.index.tolist(),
+                    orientation='h',
+                    labels={'x': 'Number of Factories', 'y': 'Manufacturer'}
                 )
-                fig.update_traces(marker_color=colors[0], hovertemplate='%{y}: %{x:.1f}%<extra></extra>')
+                fig.update_traces(marker_color=colors[0], hovertemplate='%{y}: %{x} factories<extra></extra>')
                 apply_chart_theme(fig)
                 fig.update_layout(
                     showlegend=False,
-                    xaxis_title="Average Utilization (%)",
+                    xaxis_title="Number of Factories",
                     yaxis_title="",
                     height=400
                 )
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No manufacturer data available")
 
         with col2:
-            st.markdown("#### Utilization Distribution")
+            st.markdown("#### Factories by Technology")
+            # Filter out NULL/empty values
+            tech_data = factories_df[factories_df['technology'].notna() & (factories_df['technology'] != '')]
+            tech_counts = tech_data['technology'].value_counts()
 
-            fig = px.histogram(
-                util_df,
-                x='utilization_pct',
-                nbins=30
-            )
-            fig.update_traces(marker_color=colors[0])
-            apply_chart_theme(fig)
-            fig.update_layout(
-                showlegend=False,
-                xaxis_title="Utilization (%)",
-                yaxis_title="Count",
-                height=400
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Detailed utilization table
-        st.markdown("#### Utilization Details")
-
-        util_display_cols = [
-            'date', 'manufacturer', 'factory_name', 'utilization_pct',
-            'capacity_ksheets', 'actual_input_ksheets', 'technology'
-        ]
-        available_cols = [c for c in util_display_cols if c in util_df.columns]
-
-        st.dataframe(
-            util_df[available_cols].head(500),
-            use_container_width=True,
-            hide_index=True,
-            height=400,
-            column_config={
-                "date": st.column_config.TextColumn("Date", width="small"),
-                "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
-                "factory_name": st.column_config.TextColumn("Factory", width="medium"),
-                "utilization_pct": st.column_config.NumberColumn("Utilization %", format="%.1f%%"),
-                "capacity_ksheets": st.column_config.NumberColumn("Capacity (K)", format="%,.0f"),
-                "actual_input_ksheets": st.column_config.NumberColumn("Input (K)", format="%,.0f"),
-                "technology": st.column_config.TextColumn("Tech", width="small")
-            }
-        )
-
-        create_download_buttons(util_df, "utilization", "Utilization Report")
-
-    else:
-        st.info("No utilization data available for the selected filters.")
-
-
-# Tab 3: Capacity Overview
-with tab3:
-    # Load utilization data for capacity analysis
-    try:
-        util_df = DatabaseManager.get_utilization(
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d")
-        )
-    except Exception as e:
-        st.error(f"Error loading capacity data: {str(e)}")
-        st.stop()
-
-    if len(util_df) > 0:
-        st.markdown("#### Total Industry Capacity Over Time")
-
-        capacity_by_date = util_df.groupby('date').agg({
-            'capacity_ksheets': 'sum',
-            'actual_input_ksheets': 'sum',
-            'capacity_sqm_k': 'sum'
-        }).reset_index()
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=capacity_by_date['date'].tolist(),
-            y=capacity_by_date['capacity_ksheets'].tolist(),
-            mode='lines',
-            name='Total Capacity',
-            fill='tozeroy',
-            line=dict(color=colors[0], width=2),
-            fillcolor='rgba(0, 122, 255, 0.1)',
-            hovertemplate='Capacity: %{y:,.0f}K<extra></extra>'
-        ))
-
-        fig.add_trace(go.Scatter(
-            x=capacity_by_date['date'].tolist(),
-            y=capacity_by_date['actual_input_ksheets'].tolist(),
-            mode='lines',
-            name='Actual Input',
-            line=dict(color=colors[1], width=2),
-            hovertemplate='Input: %{y:,.0f}K<extra></extra>'
-        ))
-
-        apply_chart_theme(fig)
-        fig.update_layout(
-            xaxis_title="Date",
-            yaxis_title="K Sheets",
-            height=400,
-            hovermode='x unified'
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Capacity by manufacturer
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("#### Capacity Share by Manufacturer")
-
-            latest_date = util_df['date'].max()
-            # Filter out NULL/empty manufacturers
-            capacity_df = util_df[(util_df['date'] == latest_date) &
-                                   util_df['manufacturer'].notna() &
-                                   (util_df['manufacturer'] != '')]
-            latest_capacity = capacity_df.groupby('manufacturer')['capacity_ksheets'].sum()
-
-            if len(latest_capacity) > 0:
+            if len(tech_counts) > 0:
                 fig = px.pie(
-                    values=latest_capacity.values.tolist(),
-                    names=latest_capacity.index.tolist(),
+                    values=tech_counts.values.tolist(),
+                    names=tech_counts.index.tolist(),
                     color_discrete_sequence=colors,
                     hole=0.4
                 )
-                fig.update_traces(hovertemplate='%{label}: %{value:,.0f}K (%{percent})<extra></extra>')
+                fig.update_traces(hovertemplate='%{label}: %{value} factories (%{percent})<extra></extra>')
                 apply_chart_theme(fig)
                 fig.update_layout(height=400)
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No technology data available")
 
-        with col2:
-            st.markdown("#### Capacity by Technology")
+        st.divider()
 
-            # Filter out NULL/empty technologies
-            tech_util_df = util_df[util_df['technology'].notna() & (util_df['technology'] != '')]
-            capacity_by_tech = tech_util_df.groupby('technology')['capacity_ksheets'].sum()
+        # Data table
+        st.markdown("#### Factory Database")
 
-            if len(capacity_by_tech) > 0:
+        # Select display columns with ramp_date
+        display_cols = [
+            'factory_id', 'manufacturer', 'factory_name', 'location', 'region',
+            'technology', 'generation', 'application_category', 'status', 'ramp_date'
+        ]
+        available_cols = [c for c in display_cols if c in factories_df.columns]
+
+        # Sort naturally by factory_name
+        display_df = factories_df[available_cols].copy()
+        if 'factory_name' in display_df.columns:
+            display_df = display_df.iloc[display_df['factory_name'].map(natural_sort_key).argsort()]
+
+        column_config = {
+            "factory_id": st.column_config.TextColumn("Factory ID", width="medium"),
+            "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
+            "factory_name": st.column_config.TextColumn("Factory Name", width="medium"),
+            "location": st.column_config.TextColumn("Location", width="medium"),
+            "region": st.column_config.TextColumn("Region", width="small"),
+            "technology": st.column_config.TextColumn("Tech", width="small"),
+            "generation": st.column_config.TextColumn("Gen", width="small"),
+            "application_category": st.column_config.TextColumn("Application", width="small"),
+            "status": st.column_config.TextColumn("Status", width="small"),
+            "ramp_date": st.column_config.TextColumn("Ramp Date", width="small")
+        }
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            height=400,
+            column_config=column_config
+        )
+
+        # Export buttons
+        st.markdown("<br>", unsafe_allow_html=True)
+        create_download_buttons(factories_df, "factories", "Factory Database Report")
+
+
+    # Tab 2: Utilization Analysis
+    with tab2:
+        # Load utilization data
+        try:
+            util_df = DatabaseManager.get_utilization(
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d"),
+                manufacturer=manufacturer if manufacturer != "All" else None
+            )
+        except Exception as e:
+            st.error(f"Error loading utilization data: {str(e)}")
+            st.stop()
+
+        if len(util_df) > 0:
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                avg_util = util_df['utilization_pct'].mean()
+                st.metric("Avg Utilization", format_percent(avg_util))
+
+            with col2:
+                max_util = util_df['utilization_pct'].max()
+                st.metric("Max Utilization", format_percent(max_util))
+
+            with col3:
+                total_capacity = util_df.groupby('date')['capacity_ksheets'].sum().mean()
+                st.metric("Avg Capacity", f"{format_with_commas(total_capacity)}K sheets")
+
+            with col4:
+                factories_count = util_df['factory_id'].nunique()
+                st.metric("Factories Tracked", format_with_commas(factories_count))
+
+            st.divider()
+
+            # Utilization over time
+            st.markdown("#### Utilization Trends Over Time")
+
+            util_by_date = util_df.groupby('date').agg({
+                'utilization_pct': 'mean',
+                'capacity_ksheets': 'sum',
+                'actual_input_ksheets': 'sum'
+            }).reset_index()
+
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatter(
+                x=util_by_date['date'].tolist(),
+                y=util_by_date['utilization_pct'].tolist(),
+                mode='lines+markers',
+                name='Utilization %',
+                line=dict(color=colors[0], width=2),
+                marker=dict(size=6),
+                hovertemplate='%{x}<br>Utilization: %{y:.1f}%<extra></extra>'
+            ))
+
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Date",
+                yaxis_title="Utilization (%)",
+                height=400,
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Utilization by manufacturer
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### Utilization by Manufacturer")
+
+                # Filter out NULL/empty manufacturers
+                util_mfr_df = util_df[util_df['manufacturer'].notna() & (util_df['manufacturer'] != '')]
+                util_by_mfr = util_mfr_df.groupby('manufacturer')['utilization_pct'].mean().sort_values(ascending=True)
+
+                if len(util_by_mfr) > 0:
+                    fig = px.bar(
+                        x=util_by_mfr.values.tolist(),
+                        y=util_by_mfr.index.tolist(),
+                        orientation='h'
+                    )
+                    fig.update_traces(marker_color=colors[0], hovertemplate='%{y}: %{x:.1f}%<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        showlegend=False,
+                        xaxis_title="Average Utilization (%)",
+                        yaxis_title="",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                st.markdown("#### Utilization Distribution")
+
+                fig = px.histogram(
+                    util_df,
+                    x='utilization_pct',
+                    nbins=30
+                )
+                fig.update_traces(marker_color=colors[0])
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    showlegend=False,
+                    xaxis_title="Utilization (%)",
+                    yaxis_title="Count",
+                    height=400
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # Detailed utilization table
+            st.markdown("#### Utilization Details")
+
+            util_display_cols = [
+                'date', 'manufacturer', 'factory_name', 'utilization_pct',
+                'capacity_ksheets', 'actual_input_ksheets', 'technology'
+            ]
+            available_cols = [c for c in util_display_cols if c in util_df.columns]
+
+            st.dataframe(
+                util_df[available_cols].head(500),
+                use_container_width=True,
+                hide_index=True,
+                height=400,
+                column_config={
+                    "date": st.column_config.TextColumn("Date", width="small"),
+                    "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
+                    "factory_name": st.column_config.TextColumn("Factory", width="medium"),
+                    "utilization_pct": st.column_config.NumberColumn("Utilization %", format="%.1f%%"),
+                    "capacity_ksheets": st.column_config.NumberColumn("Capacity (K)", format="%,.0f"),
+                    "actual_input_ksheets": st.column_config.NumberColumn("Input (K)", format="%,.0f"),
+                    "technology": st.column_config.TextColumn("Tech", width="small")
+                }
+            )
+
+            create_download_buttons(util_df, "utilization", "Utilization Report")
+
+        else:
+            st.info("No utilization data available for the selected filters.")
+
+
+    # Tab 3: Capacity Overview
+    with tab3:
+        # Load utilization data for capacity analysis
+        try:
+            util_df = DatabaseManager.get_utilization(
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d")
+            )
+        except Exception as e:
+            st.error(f"Error loading capacity data: {str(e)}")
+            st.stop()
+
+        if len(util_df) > 0:
+            st.markdown("#### Total Industry Capacity Over Time")
+
+            capacity_by_date = util_df.groupby('date').agg({
+                'capacity_ksheets': 'sum',
+                'actual_input_ksheets': 'sum',
+                'capacity_sqm_k': 'sum'
+            }).reset_index()
+
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatter(
+                x=capacity_by_date['date'].tolist(),
+                y=capacity_by_date['capacity_ksheets'].tolist(),
+                mode='lines',
+                name='Total Capacity',
+                fill='tozeroy',
+                line=dict(color=colors[0], width=2),
+                fillcolor='rgba(0, 122, 255, 0.1)',
+                hovertemplate='Capacity: %{y:,.0f}K<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=capacity_by_date['date'].tolist(),
+                y=capacity_by_date['actual_input_ksheets'].tolist(),
+                mode='lines',
+                name='Actual Input',
+                line=dict(color=colors[1], width=2),
+                hovertemplate='Input: %{y:,.0f}K<extra></extra>'
+            ))
+
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Date",
+                yaxis_title="K Sheets",
+                height=400,
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # Capacity by manufacturer
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### Capacity Share by Manufacturer")
+
+                latest_date = util_df['date'].max()
+                # Filter out NULL/empty manufacturers
+                capacity_df = util_df[(util_df['date'] == latest_date) &
+                                       util_df['manufacturer'].notna() &
+                                       (util_df['manufacturer'] != '')]
+                latest_capacity = capacity_df.groupby('manufacturer')['capacity_ksheets'].sum()
+
+                if len(latest_capacity) > 0:
+                    fig = px.pie(
+                        values=latest_capacity.values.tolist(),
+                        names=latest_capacity.index.tolist(),
+                        color_discrete_sequence=colors,
+                        hole=0.4
+                    )
+                    fig.update_traces(hovertemplate='%{label}: %{value:,.0f}K (%{percent})<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                st.markdown("#### Capacity by Technology")
+
+                # Filter out NULL/empty technologies
+                tech_util_df = util_df[util_df['technology'].notna() & (util_df['technology'] != '')]
+                capacity_by_tech = tech_util_df.groupby('technology')['capacity_ksheets'].sum()
+
+                if len(capacity_by_tech) > 0:
+                    fig = px.bar(
+                        x=capacity_by_tech.index.tolist(),
+                        y=capacity_by_tech.values.tolist()
+                    )
+                    fig.update_traces(marker_color=colors[0], hovertemplate='%{x}: %{y:,.0f}K<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        showlegend=False,
+                        xaxis_title="Technology",
+                        yaxis_title="Total Capacity (K Sheets)",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+            # Regional capacity breakdown
+            st.divider()
+            st.markdown("#### Regional Capacity Distribution")
+
+            # Filter out NULL/empty regions
+            region_df = util_df[util_df['region'].notna() & (util_df['region'] != '')]
+            capacity_by_region = region_df.groupby('region')['capacity_ksheets'].sum().sort_values(ascending=False)
+
+            if len(capacity_by_region) > 0:
                 fig = px.bar(
-                    x=capacity_by_tech.index.tolist(),
-                    y=capacity_by_tech.values.tolist()
+                    x=capacity_by_region.index.tolist(),
+                    y=capacity_by_region.values.tolist()
                 )
                 fig.update_traces(marker_color=colors[0], hovertemplate='%{x}: %{y:,.0f}K<extra></extra>')
                 apply_chart_theme(fig)
                 fig.update_layout(
                     showlegend=False,
-                    xaxis_title="Technology",
+                    xaxis_title="Region",
                     yaxis_title="Total Capacity (K Sheets)",
-                    height=400
+                    height=350
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-        # Regional capacity breakdown
-        st.divider()
-        st.markdown("#### Regional Capacity Distribution")
-
-        # Filter out NULL/empty regions
-        region_df = util_df[util_df['region'].notna() & (util_df['region'] != '')]
-        capacity_by_region = region_df.groupby('region')['capacity_ksheets'].sum().sort_values(ascending=False)
-
-        if len(capacity_by_region) > 0:
-            fig = px.bar(
-                x=capacity_by_region.index.tolist(),
-                y=capacity_by_region.values.tolist()
-            )
-            fig.update_traces(marker_color=colors[0], hovertemplate='%{x}: %{y:,.0f}K<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                showlegend=False,
-                xaxis_title="Region",
-                yaxis_title="Total Capacity (K Sheets)",
-                height=350
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    else:
-        st.info("No capacity data available for the selected date range.")
+        else:
+            st.info("No capacity data available for the selected date range.")

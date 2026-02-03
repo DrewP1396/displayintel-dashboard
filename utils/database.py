@@ -327,6 +327,73 @@ class DatabaseManager:
             row = cursor.fetchone()
             return (row[0] or "2019-01-01", row[1] or "2026-12-31")
 
+    @staticmethod
+    @st.cache_data(ttl=600)
+    def get_factory_names(manufacturer: Optional[str] = None) -> List[str]:
+        """Get list of factory names optionally filtered by manufacturer."""
+        query = """
+            SELECT DISTINCT factory_name FROM factories
+            WHERE factory_name IS NOT NULL
+        """
+        params = []
+        if manufacturer and manufacturer != "All":
+            query += " AND manufacturer = ?"
+            params.append(manufacturer)
+        query += " ORDER BY factory_name"
+
+        with get_connection() as conn:
+            cursor = conn.execute(query, params)
+            return ["All Factories"] + [row[0] for row in cursor.fetchall() if row[0]]
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_factory_by_name(factory_name: str) -> Optional[pd.DataFrame]:
+        """Get a single factory by name."""
+        query = "SELECT * FROM factories WHERE factory_name = ?"
+        with get_connection() as conn:
+            df = pd.read_sql_query(query, conn, params=[factory_name])
+            return df if len(df) > 0 else None
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_factory_ramp_date(factory_id: str) -> Optional[str]:
+        """Get the first ramp date for a factory (first month with utilization > 0)."""
+        query = """
+            SELECT MIN(date) as ramp_date
+            FROM utilization
+            WHERE factory_id = ? AND utilization_pct > 0
+        """
+        with get_connection() as conn:
+            cursor = conn.execute(query, [factory_id])
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_equipment_orders_for_factory(factory_id: str) -> pd.DataFrame:
+        """Get equipment orders for a specific factory."""
+        query = """
+            SELECT * FROM equipment_orders
+            WHERE factory_id = ?
+            ORDER BY po_year DESC, po_quarter DESC
+        """
+        with get_connection() as conn:
+            return pd.read_sql_query(query, conn, params=[factory_id])
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_all_factory_ramp_dates() -> dict:
+        """Get ramp dates for all factories."""
+        query = """
+            SELECT factory_id, MIN(date) as ramp_date
+            FROM utilization
+            WHERE utilization_pct > 0
+            GROUP BY factory_id
+        """
+        with get_connection() as conn:
+            cursor = conn.execute(query)
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
     # Summary statistics
     @staticmethod
     @st.cache_data(ttl=300)
