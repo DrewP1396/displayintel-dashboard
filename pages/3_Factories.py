@@ -127,21 +127,53 @@ colors = theme['color_discrete_sequence']
 # Factory Detail View (when specific factory is selected)
 # =============================================================================
 if selected_factory != "All Factories":
-    # Get factory data
+    # Get factory data (may have multiple entries for different backplanes)
     factory_df = DatabaseManager.get_factory_by_name(selected_factory)
 
     if factory_df is not None and len(factory_df) > 0:
+        # Use first entry for general info
         factory = factory_df.iloc[0]
-        factory_id = factory.get('factory_id', '')
 
-        # Get ramp date
-        ramp_date = DatabaseManager.get_factory_ramp_date(factory_id)
+        # Get all backplane types for this factory
+        backplanes = factory_df['backplane'].dropna().unique().tolist()
+        backplane_str = ", ".join(backplanes) if backplanes else "-"
+
+        # Get MP Ramp dates by backplane from factories table
+        def format_quarter(date_val):
+            """Format date as quarter (e.g., CQ1'19)."""
+            if pd.isna(date_val) or not date_val:
+                return None
+            try:
+                if isinstance(date_val, str):
+                    if len(date_val) == 4:  # Just year like "2015"
+                        return f"CQ1'{date_val[2:]}"
+                    date_val = pd.to_datetime(date_val)
+                q = (date_val.month - 1) // 3 + 1
+                return f"CQ{q}'{str(date_val.year)[2:]}"
+            except:
+                return str(date_val)[:10] if date_val else None
+
+        ramp_by_bp = {}
+        for _, row in factory_df.iterrows():
+            bp = row.get('backplane', 'Unknown')
+            mp_ramp = row.get('mp_ramp_date')
+            if mp_ramp and bp:
+                ramp_by_bp[bp] = format_quarter(mp_ramp)
+
+        # Get earliest ramp date for display
+        ramp_dates = [r for r in ramp_by_bp.values() if r]
+        ramp_date = min(ramp_dates) if ramp_dates else None
 
         # Header with back context
+        tech = factory.get('technology', 'Unknown') or 'Unknown'
+        gen = factory.get('generation', '') or ''
         st.markdown(f"""
             <div style="margin-bottom: 1rem;">
                 <span style="color: #86868B; font-size: 0.9rem;">
                     {factory.get('manufacturer', 'Unknown')} &gt; {selected_factory}
+                </span>
+                <span style="background: {'#007AFF' if tech == 'OLED' else '#34C759'}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">
+                    {tech} {gen}
                 </span>
             </div>
         """, unsafe_allow_html=True)
@@ -152,62 +184,197 @@ if selected_factory != "All Factories":
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric("Factory ID", factory_id or "-")
-            st.metric("Technology", factory.get('technology', '-') or "-")
+            st.metric("Factory", selected_factory)
+            st.metric("Generation", factory.get('generation', '-') or "-")
 
         with col2:
             st.metric("Location", factory.get('location', '-') or "-")
-            st.metric("Generation", factory.get('generation', '-') or "-")
+            st.metric("Technology", factory.get('technology', '-') or "-")
 
         with col3:
             st.metric("Region", factory.get('region', '-') or "-")
-            st.metric("Application", factory.get('application_category', '-') or "-")
+            st.metric("Backplanes", backplane_str)
 
         with col4:
             st.metric("Status", (factory.get('status', '-') or "-").title())
-            st.metric("Ramp Date", ramp_date or "Not yet")
+            st.metric("First Ramp", ramp_date or "Not yet")
 
         st.divider()
 
-        # Get utilization data for this factory
+        # Capacity by Backplane Technology
+        st.markdown("### Capacity by Backplane Technology")
+
+        # Get capacity data for this factory and related production lines
+        backplane_df = DatabaseManager.get_capacity_by_backplane(
+            manufacturer=factory.get('manufacturer'),
+            factory_name=selected_factory
+        )
+
+        if len(backplane_df) > 0:
+            # Group by backplane and sum capacity
+            bp_summary = backplane_df.groupby('backplane').agg({
+                'capacity_ksheets': 'sum',
+                'actual_input_ksheets': 'sum',
+                'factory_name': 'count'
+            }).reset_index()
+            bp_summary.columns = ['Backplane', 'Capacity (K/mo)', 'Input (K/mo)', 'Lines']
+
+            # Calculate total
+            total_capacity = bp_summary['Capacity (K/mo)'].sum()
+            total_input = bp_summary['Input (K/mo)'].sum()
+
+            # Display metrics with ramp dates
+            cols = st.columns(len(bp_summary) + 1)
+
+            # Total column
+            with cols[0]:
+                st.metric("Total Capacity", f"{total_capacity:,.1f}K/mo")
+
+            # Per-backplane columns with ramp date
+            for i, row in bp_summary.iterrows():
+                with cols[i + 1]:
+                    bp_name = row['Backplane'] or 'Unknown'
+                    bp_ramp = ramp_by_bp.get(bp_name, '')
+                    label = f"{bp_name}" + (f" ({bp_ramp})" if bp_ramp else "")
+                    st.metric(label, f"{row['Capacity (K/mo)']:,.1f}K/mo")
+
+            # Show detailed breakdown table
+            with st.expander("View Production Lines"):
+                bp_display = backplane_df[['factory_name', 'backplane', 'generation', 'capacity_ksheets', 'actual_input_ksheets', 'utilization_pct']].copy()
+                bp_display['capacity_ksheets'] = bp_display['capacity_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+                bp_display['actual_input_ksheets'] = bp_display['actual_input_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+                bp_display['utilization_pct'] = bp_display['utilization_pct'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+
+                st.dataframe(
+                    bp_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "factory_name": st.column_config.TextColumn("Line", width="medium"),
+                        "backplane": st.column_config.TextColumn("Backplane", width="small"),
+                        "generation": st.column_config.TextColumn("Gen", width="small"),
+                        "capacity_ksheets": st.column_config.TextColumn("Capacity (K/mo)", width="small"),
+                        "actual_input_ksheets": st.column_config.TextColumn("Input (K/mo)", width="small"),
+                        "utilization_pct": st.column_config.TextColumn("Util %", width="small")
+                    }
+                )
+        else:
+            st.info("No capacity data available.")
+
+        # Capacity Installments by Quarter
+        st.markdown("### Capacity Installments by Quarter")
+
+        # Get full utilization history to show capacity additions
+        full_util_df = DatabaseManager.get_utilization(factory_name=selected_factory)
+
+        if len(full_util_df) > 0:
+            # Group by quarter and backplane, get capacity
+            full_util_df['quarter'] = pd.to_datetime(full_util_df['date']).dt.to_period('Q').astype(str)
+
+            # Get capacity per quarter per backplane
+            quarterly_cap = full_util_df.groupby(['quarter', 'backplane']).agg({
+                'capacity_ksheets': 'max'  # Use max capacity for each quarter
+            }).reset_index()
+
+            # Calculate capacity additions (difference from previous quarter)
+            quarterly_cap = quarterly_cap.sort_values(['backplane', 'quarter'])
+            quarterly_cap['capacity_change'] = quarterly_cap.groupby('backplane')['capacity_ksheets'].diff().fillna(quarterly_cap['capacity_ksheets'])
+
+            # Only show quarters with capacity additions
+            additions = quarterly_cap[quarterly_cap['capacity_change'] > 0.5].copy()
+
+            if len(additions) > 0:
+                # Create stacked bar chart
+                fig = go.Figure()
+
+                for bp in additions['backplane'].unique():
+                    bp_data = additions[additions['backplane'] == bp]
+                    fig.add_trace(go.Bar(
+                        x=bp_data['quarter'].tolist(),
+                        y=bp_data['capacity_change'].tolist(),
+                        name=bp,
+                        hovertemplate=f'{bp}<br>%{{x}}<br>+%{{y:,.1f}}K/mo<extra></extra>'
+                    ))
+
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    xaxis_title="Quarter",
+                    yaxis_title="Capacity Added (K/mo)",
+                    height=300,
+                    barmode='group',
+                    showlegend=True
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Show table of additions
+                with st.expander("View Capacity Addition Details"):
+                    additions_display = additions[['quarter', 'backplane', 'capacity_change', 'capacity_ksheets']].copy()
+                    additions_display.columns = ['Quarter', 'Backplane', 'Added (K/mo)', 'Total (K/mo)']
+                    additions_display['Added (K/mo)'] = additions_display['Added (K/mo)'].apply(lambda x: f"{x:,.1f}")
+                    additions_display['Total (K/mo)'] = additions_display['Total (K/mo)'].apply(lambda x: f"{x:,.1f}")
+                    st.dataframe(additions_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("No capacity additions found in the data.")
+        else:
+            st.info("No capacity history available.")
+
+        st.divider()
+
+        # Get utilization data for this factory (all backplane variants)
         util_df = DatabaseManager.get_utilization(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
-            factory_id=factory_id
+            factory_name=selected_factory
         )
 
-        # Current metrics from latest utilization
+        # Current metrics from latest utilization with actual data (not projections)
         if len(util_df) > 0:
-            latest_util = util_df.sort_values('date', ascending=False).iloc[0]
+            # Get latest date with actual input > 0
+            util_with_data = util_df[util_df['actual_input_ksheets'] > 0]
+            if len(util_with_data) > 0:
+                latest_date = util_with_data['date'].max()
+            else:
+                latest_date = util_df['date'].max()
+            latest_data = util_df[util_df['date'] == latest_date]
+
+            total_capacity = latest_data['capacity_ksheets'].sum()
+            total_input = latest_data['actual_input_ksheets'].sum()
+            avg_util = (total_input / total_capacity * 100) if total_capacity > 0 else 0
 
             col1, col2, col3 = st.columns(3)
             with col1:
-                current_util = latest_util.get('utilization_pct', 0)
-                st.metric("Current Utilization", f"{current_util:.1f}%" if current_util else "-")
+                st.metric("Current Utilization", f"{avg_util:.1f}%")
             with col2:
-                capacity = latest_util.get('capacity_ksheets', 0)
-                st.metric("Current Capacity", f"{format_with_commas(capacity)}K sheets" if capacity else "-")
+                st.metric("Total Capacity (K/mo)", f"{total_capacity:,.1f}")
             with col3:
-                input_sheets = latest_util.get('actual_input_ksheets', 0)
-                st.metric("Current Input", f"{format_with_commas(input_sheets)}K sheets" if input_sheets else "-")
+                st.metric("Total Input (K/mo)", f"{total_input:,.1f}")
 
             st.divider()
 
-            # Utilization Timeline
-            st.markdown("### Utilization Timeline")
+            # Utilization Timeline by Backplane
+            st.markdown("### Utilization Timeline by Backplane")
 
             fig = go.Figure()
 
-            # Main utilization line
-            fig.add_trace(go.Scatter(
-                x=util_df['date'].tolist(),
-                y=util_df['utilization_pct'].tolist(),
-                mode='lines+markers',
-                name='Utilization %',
-                line=dict(color=colors[0], width=2),
-                marker=dict(size=6),
-                hovertemplate='%{x}<br>Utilization: %{y:.1f}%<extra></extra>'
-            ))
+            # Group by date and backplane
+            backplanes_in_data = util_df['backplane'].dropna().unique()
+
+            for i, bp in enumerate(backplanes_in_data):
+                bp_data = util_df[util_df['backplane'] == bp].groupby('date').agg({
+                    'capacity_ksheets': 'sum',
+                    'actual_input_ksheets': 'sum'
+                }).reset_index()
+                bp_data['utilization_pct'] = (bp_data['actual_input_ksheets'] / bp_data['capacity_ksheets'] * 100)
+
+                fig.add_trace(go.Scatter(
+                    x=bp_data['date'].tolist(),
+                    y=bp_data['utilization_pct'].tolist(),
+                    mode='lines+markers',
+                    name=f'{bp}',
+                    line=dict(color=colors[i % len(colors)], width=2),
+                    marker=dict(size=6),
+                    hovertemplate=f'{bp}<br>%{{x}}<br>Utilization: %{{y:.1f}}%<extra></extra>'
+                ))
 
             # Add ramp date annotation if available
             if ramp_date and ramp_date in util_df['date'].values:
@@ -230,32 +397,32 @@ if selected_factory != "All Factories":
             st.plotly_chart(fig, use_container_width=True)
 
             # Capacity and Input Chart
-            st.markdown("### Capacity vs Actual Input")
+            st.markdown("### Monthly Capacity vs Actual Input")
 
             fig2 = go.Figure()
 
             fig2.add_trace(go.Bar(
                 x=util_df['date'].tolist(),
                 y=util_df['capacity_ksheets'].tolist(),
-                name='Capacity',
+                name='Capacity (K/mo)',
                 marker_color=colors[0],
                 opacity=0.7,
-                hovertemplate='Capacity: %{y:,.0f}K<extra></extra>'
+                hovertemplate='Capacity: %{y:,.1f}K/mo<extra></extra>'
             ))
 
             fig2.add_trace(go.Scatter(
                 x=util_df['date'].tolist(),
                 y=util_df['actual_input_ksheets'].tolist(),
                 mode='lines+markers',
-                name='Actual Input',
+                name='Actual Input (K/mo)',
                 line=dict(color=colors[1], width=2),
-                hovertemplate='Input: %{y:,.0f}K<extra></extra>'
+                hovertemplate='Input: %{y:,.1f}K/mo<extra></extra>'
             ))
 
             apply_chart_theme(fig2)
             fig2.update_layout(
                 xaxis_title="Date",
-                yaxis_title="K Sheets",
+                yaxis_title="K Sheets / Month",
                 height=350,
                 barmode='overlay',
                 hovermode='x unified'
@@ -268,10 +435,13 @@ if selected_factory != "All Factories":
 
         st.divider()
 
-        # Equipment Orders for this factory
+        # Equipment Orders for this factory (get orders for all backplane variants)
         st.markdown("### Equipment Orders")
 
-        equip_df = DatabaseManager.get_equipment_orders_for_factory(factory_id)
+        # Get all factory_ids for this factory name
+        factory_ids = factory_df['factory_id'].tolist()
+        equip_dfs = [DatabaseManager.get_equipment_orders_for_factory(fid) for fid in factory_ids]
+        equip_df = pd.concat(equip_dfs, ignore_index=True) if equip_dfs else pd.DataFrame()
 
         if len(equip_df) > 0:
             # Summary metrics
@@ -290,22 +460,32 @@ if selected_factory != "All Factories":
             with col3:
                 st.metric("Total Units", format_with_commas(total_units) if total_units else "-")
 
-            # Equipment orders table
+            # Equipment orders table - format for display
             display_cols = ['po_year', 'po_quarter', 'vendor', 'equipment_type', 'units', 'amount_usd']
             available_cols = [c for c in display_cols if c in equip_df.columns]
 
+            equip_display = equip_df[available_cols].head(100).copy()
+
+            # Format columns for cleaner display
+            if 'units' in equip_display.columns:
+                equip_display['units'] = equip_display['units'].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "-")
+            if 'amount_usd' in equip_display.columns:
+                equip_display['amount_usd'] = equip_display['amount_usd'].apply(
+                    lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "-"
+                )
+
             st.dataframe(
-                equip_df[available_cols].head(100),
+                equip_display,
                 use_container_width=True,
                 hide_index=True,
                 height=300,
                 column_config={
-                    "po_year": st.column_config.NumberColumn("Year", format="%d"),
-                    "po_quarter": st.column_config.TextColumn("Quarter", width="small"),
+                    "po_year": st.column_config.TextColumn("Year", width="small"),
+                    "po_quarter": st.column_config.TextColumn("Qtr", width="small"),
                     "vendor": st.column_config.TextColumn("Vendor", width="medium"),
                     "equipment_type": st.column_config.TextColumn("Equipment Type", width="medium"),
-                    "units": st.column_config.NumberColumn("Units", format="%d"),
-                    "amount_usd": st.column_config.NumberColumn("Value (USD)", format="$%,.0f")
+                    "units": st.column_config.TextColumn("Units", width="small"),
+                    "amount_usd": st.column_config.TextColumn("Value (USD)", width="medium")
                 }
             )
         else:
@@ -478,7 +658,7 @@ else:
 
             with col3:
                 total_capacity = util_df.groupby('date')['capacity_ksheets'].sum().mean()
-                st.metric("Avg Capacity", f"{format_with_commas(total_capacity)}K sheets")
+                st.metric("Avg Monthly Capacity", f"{total_capacity:,.0f}K/mo")
 
             with col4:
                 factories_count = util_df['factory_id'].nunique()
@@ -564,27 +744,36 @@ else:
             st.divider()
 
             # Detailed utilization table
-            st.markdown("#### Utilization Details")
+            st.markdown("#### Monthly Utilization Details")
 
             util_display_cols = [
-                'date', 'manufacturer', 'factory_name', 'utilization_pct',
-                'capacity_ksheets', 'actual_input_ksheets', 'technology'
+                'date', 'manufacturer', 'factory_name', 'technology', 'utilization_pct',
+                'capacity_ksheets', 'actual_input_ksheets'
             ]
             available_cols = [c for c in util_display_cols if c in util_df.columns]
 
+            # Format for display
+            util_display = util_df[available_cols].head(500).copy()
+            if 'utilization_pct' in util_display.columns:
+                util_display['utilization_pct'] = util_display['utilization_pct'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+            if 'capacity_ksheets' in util_display.columns:
+                util_display['capacity_ksheets'] = util_display['capacity_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+            if 'actual_input_ksheets' in util_display.columns:
+                util_display['actual_input_ksheets'] = util_display['actual_input_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+
             st.dataframe(
-                util_df[available_cols].head(500),
+                util_display,
                 use_container_width=True,
                 hide_index=True,
                 height=400,
                 column_config={
                     "date": st.column_config.TextColumn("Date", width="small"),
-                    "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
+                    "manufacturer": st.column_config.TextColumn("Mfr", width="small"),
                     "factory_name": st.column_config.TextColumn("Factory", width="medium"),
-                    "utilization_pct": st.column_config.NumberColumn("Utilization %", format="%.1f%%"),
-                    "capacity_ksheets": st.column_config.NumberColumn("Capacity (K)", format="%,.0f"),
-                    "actual_input_ksheets": st.column_config.NumberColumn("Input (K)", format="%,.0f"),
-                    "technology": st.column_config.TextColumn("Tech", width="small")
+                    "technology": st.column_config.TextColumn("Tech", width="small"),
+                    "utilization_pct": st.column_config.TextColumn("Util %", width="small"),
+                    "capacity_ksheets": st.column_config.TextColumn("Capacity (K/mo)", width="small"),
+                    "actual_input_ksheets": st.column_config.TextColumn("Input (K/mo)", width="small")
                 }
             )
 
@@ -721,3 +910,4 @@ else:
 
         else:
             st.info("No capacity data available for the selected date range.")
+
