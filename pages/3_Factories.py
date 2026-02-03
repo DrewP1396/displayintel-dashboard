@@ -354,10 +354,13 @@ if selected_factory != "All Factories":
 
         st.divider()
 
-        # Equipment Orders for this factory
+        # Equipment Orders for this factory (get orders for all backplane variants)
         st.markdown("### Equipment Orders")
 
-        equip_df = DatabaseManager.get_equipment_orders_for_factory(factory_id)
+        # Get all factory_ids for this factory name
+        factory_ids = factory_df['factory_id'].tolist()
+        equip_dfs = [DatabaseManager.get_equipment_orders_for_factory(fid) for fid in factory_ids]
+        equip_df = pd.concat(equip_dfs, ignore_index=True) if equip_dfs else pd.DataFrame()
 
         if len(equip_df) > 0:
             # Summary metrics
