@@ -138,10 +138,15 @@ if selected_factory != "All Factories":
         ramp_date = DatabaseManager.get_factory_ramp_date(factory_id)
 
         # Header with back context
+        tech = factory.get('technology', 'Unknown') or 'Unknown'
+        gen = factory.get('generation', '') or ''
         st.markdown(f"""
             <div style="margin-bottom: 1rem;">
                 <span style="color: #86868B; font-size: 0.9rem;">
                     {factory.get('manufacturer', 'Unknown')} &gt; {selected_factory}
+                </span>
+                <span style="background: {'#007AFF' if tech == 'OLED' else '#34C759'}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">
+                    {tech} {gen}
                 </span>
             </div>
         """, unsafe_allow_html=True)
@@ -186,10 +191,10 @@ if selected_factory != "All Factories":
                 st.metric("Current Utilization", f"{current_util:.1f}%" if current_util else "-")
             with col2:
                 capacity = latest_util.get('capacity_ksheets', 0)
-                st.metric("Current Capacity", f"{format_with_commas(capacity)}K sheets" if capacity else "-")
+                st.metric("Capacity (K/month)", f"{capacity:,.1f}" if capacity else "-")
             with col3:
                 input_sheets = latest_util.get('actual_input_ksheets', 0)
-                st.metric("Current Input", f"{format_with_commas(input_sheets)}K sheets" if input_sheets else "-")
+                st.metric("Input (K/month)", f"{input_sheets:,.1f}" if input_sheets else "-")
 
             st.divider()
 
@@ -230,32 +235,32 @@ if selected_factory != "All Factories":
             st.plotly_chart(fig, use_container_width=True)
 
             # Capacity and Input Chart
-            st.markdown("### Capacity vs Actual Input")
+            st.markdown("### Monthly Capacity vs Actual Input")
 
             fig2 = go.Figure()
 
             fig2.add_trace(go.Bar(
                 x=util_df['date'].tolist(),
                 y=util_df['capacity_ksheets'].tolist(),
-                name='Capacity',
+                name='Capacity (K/mo)',
                 marker_color=colors[0],
                 opacity=0.7,
-                hovertemplate='Capacity: %{y:,.0f}K<extra></extra>'
+                hovertemplate='Capacity: %{y:,.1f}K/mo<extra></extra>'
             ))
 
             fig2.add_trace(go.Scatter(
                 x=util_df['date'].tolist(),
                 y=util_df['actual_input_ksheets'].tolist(),
                 mode='lines+markers',
-                name='Actual Input',
+                name='Actual Input (K/mo)',
                 line=dict(color=colors[1], width=2),
-                hovertemplate='Input: %{y:,.0f}K<extra></extra>'
+                hovertemplate='Input: %{y:,.1f}K/mo<extra></extra>'
             ))
 
             apply_chart_theme(fig2)
             fig2.update_layout(
                 xaxis_title="Date",
-                yaxis_title="K Sheets",
+                yaxis_title="K Sheets / Month",
                 height=350,
                 barmode='overlay',
                 hovermode='x unified'
@@ -290,22 +295,32 @@ if selected_factory != "All Factories":
             with col3:
                 st.metric("Total Units", format_with_commas(total_units) if total_units else "-")
 
-            # Equipment orders table
+            # Equipment orders table - format for display
             display_cols = ['po_year', 'po_quarter', 'vendor', 'equipment_type', 'units', 'amount_usd']
             available_cols = [c for c in display_cols if c in equip_df.columns]
 
+            equip_display = equip_df[available_cols].head(100).copy()
+
+            # Format columns for cleaner display
+            if 'units' in equip_display.columns:
+                equip_display['units'] = equip_display['units'].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "-")
+            if 'amount_usd' in equip_display.columns:
+                equip_display['amount_usd'] = equip_display['amount_usd'].apply(
+                    lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "-"
+                )
+
             st.dataframe(
-                equip_df[available_cols].head(100),
+                equip_display,
                 use_container_width=True,
                 hide_index=True,
                 height=300,
                 column_config={
-                    "po_year": st.column_config.NumberColumn("Year", format="%d"),
-                    "po_quarter": st.column_config.TextColumn("Quarter", width="small"),
+                    "po_year": st.column_config.TextColumn("Year", width="small"),
+                    "po_quarter": st.column_config.TextColumn("Qtr", width="small"),
                     "vendor": st.column_config.TextColumn("Vendor", width="medium"),
                     "equipment_type": st.column_config.TextColumn("Equipment Type", width="medium"),
-                    "units": st.column_config.NumberColumn("Units", format="%d"),
-                    "amount_usd": st.column_config.NumberColumn("Value (USD)", format="$%,.0f")
+                    "units": st.column_config.TextColumn("Units", width="small"),
+                    "amount_usd": st.column_config.TextColumn("Value (USD)", width="medium")
                 }
             )
         else:
@@ -478,7 +493,7 @@ else:
 
             with col3:
                 total_capacity = util_df.groupby('date')['capacity_ksheets'].sum().mean()
-                st.metric("Avg Capacity", f"{format_with_commas(total_capacity)}K sheets")
+                st.metric("Avg Monthly Capacity", f"{total_capacity:,.0f}K/mo")
 
             with col4:
                 factories_count = util_df['factory_id'].nunique()
@@ -564,27 +579,36 @@ else:
             st.divider()
 
             # Detailed utilization table
-            st.markdown("#### Utilization Details")
+            st.markdown("#### Monthly Utilization Details")
 
             util_display_cols = [
-                'date', 'manufacturer', 'factory_name', 'utilization_pct',
-                'capacity_ksheets', 'actual_input_ksheets', 'technology'
+                'date', 'manufacturer', 'factory_name', 'technology', 'utilization_pct',
+                'capacity_ksheets', 'actual_input_ksheets'
             ]
             available_cols = [c for c in util_display_cols if c in util_df.columns]
 
+            # Format for display
+            util_display = util_df[available_cols].head(500).copy()
+            if 'utilization_pct' in util_display.columns:
+                util_display['utilization_pct'] = util_display['utilization_pct'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+            if 'capacity_ksheets' in util_display.columns:
+                util_display['capacity_ksheets'] = util_display['capacity_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+            if 'actual_input_ksheets' in util_display.columns:
+                util_display['actual_input_ksheets'] = util_display['actual_input_ksheets'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "-")
+
             st.dataframe(
-                util_df[available_cols].head(500),
+                util_display,
                 use_container_width=True,
                 hide_index=True,
                 height=400,
                 column_config={
                     "date": st.column_config.TextColumn("Date", width="small"),
-                    "manufacturer": st.column_config.TextColumn("Manufacturer", width="small"),
+                    "manufacturer": st.column_config.TextColumn("Mfr", width="small"),
                     "factory_name": st.column_config.TextColumn("Factory", width="medium"),
-                    "utilization_pct": st.column_config.NumberColumn("Utilization %", format="%.1f%%"),
-                    "capacity_ksheets": st.column_config.NumberColumn("Capacity (K)", format="%,.0f"),
-                    "actual_input_ksheets": st.column_config.NumberColumn("Input (K)", format="%,.0f"),
-                    "technology": st.column_config.TextColumn("Tech", width="small")
+                    "technology": st.column_config.TextColumn("Tech", width="small"),
+                    "utilization_pct": st.column_config.TextColumn("Util %", width="small"),
+                    "capacity_ksheets": st.column_config.TextColumn("Capacity (K/mo)", width="small"),
+                    "actual_input_ksheets": st.column_config.TextColumn("Input (K/mo)", width="small")
                 }
             )
 
