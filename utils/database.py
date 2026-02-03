@@ -377,14 +377,20 @@ class DatabaseManager:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_equipment_orders_for_factory(factory_id: str) -> pd.DataFrame:
-        """Get equipment orders for a specific factory."""
+        """Get equipment orders for a specific factory.
+
+        Handles both old format (SDC_A3) and new format (SDC_A3_LTPO).
+        """
+        # Try exact match first, then try base factory_id (without backplane suffix)
+        base_factory_id = '_'.join(factory_id.split('_')[:2]) if factory_id.count('_') >= 2 else factory_id
+
         query = """
             SELECT * FROM equipment_orders
-            WHERE factory_id = ?
+            WHERE factory_id = ? OR factory_id = ?
             ORDER BY po_year DESC, po_quarter DESC
         """
         with get_connection() as conn:
-            return pd.read_sql_query(query, conn, params=[factory_id])
+            return pd.read_sql_query(query, conn, params=[factory_id, base_factory_id])
 
     @staticmethod
     @st.cache_data(ttl=300)

@@ -138,13 +138,30 @@ if selected_factory != "All Factories":
         backplanes = factory_df['backplane'].dropna().unique().tolist()
         backplane_str = ", ".join(backplanes) if backplanes else "-"
 
-        # Get ramp date from earliest entry
-        ramp_dates = []
+        # Get MP Ramp dates by backplane from factories table
+        def format_quarter(date_val):
+            """Format date as quarter (e.g., CQ1'19)."""
+            if pd.isna(date_val) or not date_val:
+                return None
+            try:
+                if isinstance(date_val, str):
+                    if len(date_val) == 4:  # Just year like "2015"
+                        return f"CQ1'{date_val[2:]}"
+                    date_val = pd.to_datetime(date_val)
+                q = (date_val.month - 1) // 3 + 1
+                return f"CQ{q}'{str(date_val.year)[2:]}"
+            except:
+                return str(date_val)[:10] if date_val else None
+
+        ramp_by_bp = {}
         for _, row in factory_df.iterrows():
-            fid = row.get('factory_id', '')
-            rd = DatabaseManager.get_factory_ramp_date(fid)
-            if rd:
-                ramp_dates.append(rd)
+            bp = row.get('backplane', 'Unknown')
+            mp_ramp = row.get('mp_ramp_date')
+            if mp_ramp and bp:
+                ramp_by_bp[bp] = format_quarter(mp_ramp)
+
+        # Get earliest ramp date for display
+        ramp_dates = [r for r in ramp_by_bp.values() if r]
         ramp_date = min(ramp_dates) if ramp_dates else None
 
         # Header with back context
@@ -206,18 +223,20 @@ if selected_factory != "All Factories":
             total_capacity = bp_summary['Capacity (K/mo)'].sum()
             total_input = bp_summary['Input (K/mo)'].sum()
 
-            # Display metrics
+            # Display metrics with ramp dates
             cols = st.columns(len(bp_summary) + 1)
 
             # Total column
             with cols[0]:
                 st.metric("Total Capacity", f"{total_capacity:,.1f}K/mo")
 
-            # Per-backplane columns
+            # Per-backplane columns with ramp date
             for i, row in bp_summary.iterrows():
                 with cols[i + 1]:
                     bp_name = row['Backplane'] or 'Unknown'
-                    st.metric(f"{bp_name}", f"{row['Capacity (K/mo)']:,.1f}K/mo")
+                    bp_ramp = ramp_by_bp.get(bp_name, '')
+                    label = f"{bp_name}" + (f" ({bp_ramp})" if bp_ramp else "")
+                    st.metric(label, f"{row['Capacity (K/mo)']:,.1f}K/mo")
 
             # Show detailed breakdown table
             with st.expander("View Production Lines"):
@@ -242,6 +261,63 @@ if selected_factory != "All Factories":
         else:
             st.info("No capacity data available.")
 
+        # Capacity Installments by Quarter
+        st.markdown("### Capacity Installments by Quarter")
+
+        # Get full utilization history to show capacity additions
+        full_util_df = DatabaseManager.get_utilization(factory_name=selected_factory)
+
+        if len(full_util_df) > 0:
+            # Group by quarter and backplane, get capacity
+            full_util_df['quarter'] = pd.to_datetime(full_util_df['date']).dt.to_period('Q').astype(str)
+
+            # Get capacity per quarter per backplane
+            quarterly_cap = full_util_df.groupby(['quarter', 'backplane']).agg({
+                'capacity_ksheets': 'max'  # Use max capacity for each quarter
+            }).reset_index()
+
+            # Calculate capacity additions (difference from previous quarter)
+            quarterly_cap = quarterly_cap.sort_values(['backplane', 'quarter'])
+            quarterly_cap['capacity_change'] = quarterly_cap.groupby('backplane')['capacity_ksheets'].diff().fillna(quarterly_cap['capacity_ksheets'])
+
+            # Only show quarters with capacity additions
+            additions = quarterly_cap[quarterly_cap['capacity_change'] > 0.5].copy()
+
+            if len(additions) > 0:
+                # Create stacked bar chart
+                fig = go.Figure()
+
+                for bp in additions['backplane'].unique():
+                    bp_data = additions[additions['backplane'] == bp]
+                    fig.add_trace(go.Bar(
+                        x=bp_data['quarter'].tolist(),
+                        y=bp_data['capacity_change'].tolist(),
+                        name=bp,
+                        hovertemplate=f'{bp}<br>%{{x}}<br>+%{{y:,.1f}}K/mo<extra></extra>'
+                    ))
+
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    xaxis_title="Quarter",
+                    yaxis_title="Capacity Added (K/mo)",
+                    height=300,
+                    barmode='group',
+                    showlegend=True
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Show table of additions
+                with st.expander("View Capacity Addition Details"):
+                    additions_display = additions[['quarter', 'backplane', 'capacity_change', 'capacity_ksheets']].copy()
+                    additions_display.columns = ['Quarter', 'Backplane', 'Added (K/mo)', 'Total (K/mo)']
+                    additions_display['Added (K/mo)'] = additions_display['Added (K/mo)'].apply(lambda x: f"{x:,.1f}")
+                    additions_display['Total (K/mo)'] = additions_display['Total (K/mo)'].apply(lambda x: f"{x:,.1f}")
+                    st.dataframe(additions_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("No capacity additions found in the data.")
+        else:
+            st.info("No capacity history available.")
+
         st.divider()
 
         # Get utilization data for this factory (all backplane variants)
@@ -251,9 +327,14 @@ if selected_factory != "All Factories":
             factory_name=selected_factory
         )
 
-        # Current metrics from latest utilization (aggregated across backplanes)
+        # Current metrics from latest utilization with actual data (not projections)
         if len(util_df) > 0:
-            latest_date = util_df['date'].max()
+            # Get latest date with actual input > 0
+            util_with_data = util_df[util_df['actual_input_ksheets'] > 0]
+            if len(util_with_data) > 0:
+                latest_date = util_with_data['date'].max()
+            else:
+                latest_date = util_df['date'].max()
             latest_data = util_df[util_df['date'] == latest_date]
 
             total_capacity = latest_data['capacity_ksheets'].sum()
