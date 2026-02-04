@@ -372,7 +372,7 @@ if selected_factory != "All Factories":
             fig = go.Figure()
 
             # Group by date and backplane
-            backplanes_in_data = util_df['backplane'].dropna().unique()
+            backplanes_in_data = sorted(util_df['backplane'].dropna().unique())
 
             for i, bp in enumerate(backplanes_in_data):
                 bp_data = util_df[util_df['backplane'] == bp].groupby('date').agg({
@@ -385,11 +385,21 @@ if selected_factory != "All Factories":
                     x=bp_data['date'].tolist(),
                     y=bp_data['utilization_pct'].tolist(),
                     mode='lines+markers',
-                    name=f'{bp}',
+                    name=f'{bp} ({bp_data["capacity_ksheets"].iloc[-1]:,.0f}K cap)',
                     line=dict(color=colors[i % len(colors)], width=2),
                     marker=dict(size=6),
-                    hovertemplate=f'{bp}<br>%{{x}}<br>Utilization: %{{y:.1f}}%<extra></extra>'
+                    hovertemplate=f'{bp}<br>%{{x}}<br>Utilization: %{{y:.1f}}%<br>Capacity: {bp_data["capacity_ksheets"].iloc[-1]:,.1f}K/mo<extra></extra>'
                 ))
+
+            # Note if utilization rates are identical across backplanes
+            if len(backplanes_in_data) > 1:
+                # Check if util % is the same across backplanes on shared dates
+                shared_dates = util_df.groupby('date').filter(lambda x: x['backplane'].nunique() > 1)
+                if len(shared_dates) > 0:
+                    util_spread = shared_dates.groupby('date')['utilization_pct'].std().mean()
+                    if util_spread < 0.1:
+                        st.caption("Note: Source data applies the same utilization rate across backplane lines. "
+                                   "Lines overlap on the chart. See Capacity vs Input below for per-backplane breakdown.")
 
             # Add ramp date annotation if available
             if ramp_date and ramp_date in util_df['date'].values:
@@ -411,35 +421,42 @@ if selected_factory != "All Factories":
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # Capacity and Input Chart
+            # Capacity and Input Chart - split by backplane
             st.markdown("### Monthly Capacity vs Actual Input")
 
             fig2 = go.Figure()
 
-            fig2.add_trace(go.Bar(
-                x=util_df['date'].tolist(),
-                y=util_df['capacity_ksheets'].tolist(),
-                name='Capacity (K/mo)',
-                marker_color=colors[0],
-                opacity=0.7,
-                hovertemplate='Capacity: %{y:,.1f}K/mo<extra></extra>'
-            ))
+            for i, bp in enumerate(backplanes_in_data):
+                bp_data = util_df[util_df['backplane'] == bp].groupby('date').agg({
+                    'capacity_ksheets': 'sum',
+                    'actual_input_ksheets': 'sum'
+                }).reset_index()
 
-            fig2.add_trace(go.Scatter(
-                x=util_df['date'].tolist(),
-                y=util_df['actual_input_ksheets'].tolist(),
-                mode='lines+markers',
-                name='Actual Input (K/mo)',
-                line=dict(color=colors[1], width=2),
-                hovertemplate='Input: %{y:,.1f}K/mo<extra></extra>'
-            ))
+                fig2.add_trace(go.Bar(
+                    x=bp_data['date'].tolist(),
+                    y=bp_data['capacity_ksheets'].tolist(),
+                    name=f'{bp} Capacity',
+                    marker_color=colors[i * 2 % len(colors)],
+                    opacity=0.7,
+                    hovertemplate=f'{bp} Capacity: %{{y:,.1f}}K/mo<extra></extra>'
+                ))
+
+                fig2.add_trace(go.Scatter(
+                    x=bp_data['date'].tolist(),
+                    y=bp_data['actual_input_ksheets'].tolist(),
+                    mode='lines+markers',
+                    name=f'{bp} Input',
+                    line=dict(color=colors[i * 2 + 1 % len(colors)], width=2),
+                    marker=dict(size=5),
+                    hovertemplate=f'{bp} Input: %{{y:,.1f}}K/mo<extra></extra>'
+                ))
 
             apply_chart_theme(fig2)
             fig2.update_layout(
                 xaxis_title="Date",
                 yaxis_title="K Sheets / Month",
-                height=350,
-                barmode='overlay',
+                height=400,
+                barmode='stack',
                 hovermode='x unified'
             )
 
