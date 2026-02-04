@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_currency, format_with_commas, format_percent
+from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_with_commas, format_percent
 from utils.database import DatabaseManager
 from utils.exports import create_download_buttons
 
@@ -81,6 +81,17 @@ with st.sidebar:
             key="intel_end_year"
         )
 
+def format_revenue_m(value_m):
+    """Format a revenue value that is already in $M."""
+    if pd.isna(value_m) or value_m == 0:
+        return "$0"
+    if abs(value_m) >= 1_000_000:
+        return f"${value_m / 1_000_000:,.1f}T"
+    if abs(value_m) >= 1_000:
+        return f"${value_m / 1_000:,.1f}B"
+    return f"${value_m:,.1f}M"
+
+
 # Load shipment data
 shipments_df = DatabaseManager.get_shipments(
     start_year=start_year,
@@ -126,11 +137,11 @@ with tab1:
                 units_str = f"{total_units/1000:,.1f}M"
             else:
                 units_str = f"{total_units:,.0f}K"
-            st.metric("Total Units", units_str)
+            st.metric(f"Total Units ({start_year}-{end_year})", units_str)
 
         with col2:
             total_revenue = shipments_df['revenue_m'].sum()
-            st.metric("Total Revenue", format_currency(total_revenue))
+            st.metric(f"Total Revenue ({start_year}-{end_year})", format_revenue_m(total_revenue))
 
         with col3:
             # Use pre-computed valid_makers_df (performance optimization)
@@ -482,11 +493,23 @@ with tab2:
         top_maker = maker_share.iloc[0]['panel_maker'] if len(maker_share) > 0 else 'N/A'
         top_app = app_share.index[0] if len(app_share) > 0 else 'N/A'
 
+        # Format units: units_k values are in thousands
+        if total_units_sum >= 1_000_000:
+            units_str = f"{total_units_sum / 1_000_000:,.1f}B"
+        elif total_units_sum >= 1_000:
+            units_str = f"{total_units_sum / 1_000:,.1f}M"
+        else:
+            units_str = f"{total_units_sum:,.0f}K"
+
         summary_data = pd.DataFrame({
-            'Metric': ['Total Market Revenue', 'Total Units Shipped', 'Top Technology', 'Market Leader', 'Top Application'],
+            'Metric': [
+                f'Total Market Revenue ({start_year}-{end_year})',
+                f'Total Units Shipped ({start_year}-{end_year})',
+                'Top Technology', 'Market Leader', 'Top Application'
+            ],
             'Value': [
-                f"${total_revenue_sum:,.0f}M",
-                f"{total_units_sum:,.0f}K",
+                format_revenue_m(total_revenue_sum),
+                units_str,
                 top_tech,
                 top_maker,
                 top_app

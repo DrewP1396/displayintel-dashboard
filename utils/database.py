@@ -169,7 +169,17 @@ class DatabaseManager:
         query += " ORDER BY date DESC"
 
         with get_connection() as conn:
-            return pd.read_sql_query(query, conn, params=params)
+            df = pd.read_sql_query(query, conn, params=params)
+
+        # Deduplicate: source data contains identical rows from import
+        dedup_cols = ['date', 'panel_maker', 'brand', 'model', 'size_inches',
+                      'technology', 'application', 'units_k', 'revenue_m']
+        before = len(df)
+        df = df.drop_duplicates(subset=dedup_cols)
+        if before != len(df):
+            print(f"[data-quality] shipments: dropped {before - len(df):,} "
+                  f"duplicate rows ({before:,} → {len(df):,})")
+        return df
 
     @staticmethod
     @st.cache_data(ttl=300)
@@ -513,11 +523,12 @@ class DatabaseManager:
             cursor = conn.execute("SELECT COUNT(*) FROM shipments")
             stats['shipments'] = cursor.fetchone()[0]
 
-            # Average utilization (latest quarter)
+            # Average utilization (latest quarter with actual production data)
             cursor = conn.execute("""
                 SELECT AVG(utilization_pct)
                 FROM utilization
-                WHERE date = (SELECT MAX(date) FROM utilization WHERE is_projection = 0)
+                WHERE date = (SELECT MAX(date) FROM utilization WHERE actual_input_ksheets > 0)
+                  AND actual_input_ksheets > 0
             """)
             result = cursor.fetchone()[0]
             stats['avg_utilization'] = round(result, 1) if result else 0
