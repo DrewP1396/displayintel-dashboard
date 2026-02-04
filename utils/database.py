@@ -523,15 +523,20 @@ class DatabaseManager:
             cursor = conn.execute("SELECT COUNT(*) FROM shipments")
             stats['shipments'] = cursor.fetchone()[0]
 
-            # Average utilization (latest quarter with actual production data)
+            # Average utilization — use latest month that has real production
+            # (future capacity-only rows have actual_input=0 and util=0)
             cursor = conn.execute("""
-                SELECT AVG(utilization_pct)
-                FROM utilization
-                WHERE date = (SELECT MAX(date) FROM utilization WHERE actual_input_ksheets > 0)
-                  AND actual_input_ksheets > 0
+                SELECT AVG(u.utilization_pct)
+                FROM utilization u
+                WHERE u.actual_input_ksheets > 0
+                  AND u.date = (
+                      SELECT MAX(u2.date) FROM utilization u2
+                      WHERE u2.actual_input_ksheets > 0
+                  )
             """)
             result = cursor.fetchone()[0]
-            stats['avg_utilization'] = round(result, 1) if result else 0
+            stats['avg_utilization'] = round(float(result), 1) if result is not None else 0
+            print(f"[dashboard] avg_utilization = {stats['avg_utilization']}%")
 
             # Unique manufacturers
             cursor = conn.execute("SELECT COUNT(DISTINCT manufacturer) FROM factories")

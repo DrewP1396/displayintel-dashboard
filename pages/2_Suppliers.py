@@ -125,10 +125,17 @@ if process_step_filter != "All":
     orders_df = orders_df[orders_df['_process_step'] == step_num]
     orders_df = orders_df.drop(columns=['_process_step'])
 
-# Add process_step column once (reused in Tab 1 and Tab 3)
+# Add derived columns once
 if len(orders_df) > 0:
     orders_df = orders_df.copy()
     orders_df['process_step'] = orders_df['equipment_type'].apply(get_process_step_name)
+    # Rename 'Others' equipment_type to 'Unknown'
+    orders_df['equipment_type'] = orders_df['equipment_type'].replace({'Others': 'Unknown'})
+    # Clean tool_category (strip whitespace, rename 'Other' variants)
+    if 'tool_category' in orders_df.columns:
+        orders_df['tool_category'] = orders_df['tool_category'].str.strip()
+        orders_df['tool_category'] = orders_df['tool_category'].replace({'Other': 'Unknown', '': 'Unknown'})
+        orders_df['tool_category'] = orders_df['tool_category'].fillna('Unknown')
 
 # Get theme colors
 theme = get_plotly_theme()
@@ -150,47 +157,58 @@ with tab1:
         if is_factory_view:
             st.markdown(f"### {manufacturer} - {factory}")
 
-            # Metrics: total spend, total EQ count
+            # Metrics
+            total_spend = orders_df['amount_usd'].sum()
+            total_units = orders_df['units'].sum()
+            total_orders = len(orders_df)
+            avg_cost_eq = total_spend / total_units if total_units > 0 else 0
+
             col1, col2, col3, col4 = st.columns(4)
-
             with col1:
-                total_spend = orders_df['amount_usd'].sum()
                 st.metric("Total Spend", f"${total_spend:,.0f}")
-
             with col2:
-                total_units = orders_df['units'].sum()
-                st.metric("Total Equipment", f"{int(total_units):,}")
-
+                st.metric("Equipment Count", f"{int(total_units):,}")
             with col3:
-                total_orders = len(orders_df)
-                st.metric("Total Orders", f"{total_orders:,}")
-
+                st.metric("Avg Cost / EQ", f"${avg_cost_eq:,.0f}")
             with col4:
                 unique_vendors = orders_df[orders_df['vendor'].notna() & (orders_df['vendor'] != '')]['vendor'].nunique()
                 st.metric("Unique Vendors", f"{unique_vendors:,}")
 
             st.divider()
 
-            # Table: top 10 purchases
-            st.markdown("#### Top 10 Purchases")
+            # EQ PO table: all orders, newest first
+            st.markdown("#### Equipment Purchase Orders")
 
-            top_purchases = orders_df.groupby(['equipment_type', 'vendor']).agg({
-                'amount_usd': 'sum',
-                'units': 'sum'
-            }).reset_index()
-            top_purchases.columns = ['Equipment Type', 'Vendor', 'Total Spend', 'Units']
-            top_purchases = top_purchases.sort_values('Total Spend', ascending=False).head(10)
+            factory_orders = orders_df.sort_values(
+                ['po_year', 'po_quarter'], ascending=[False, False]
+            )
 
-            # Format for display
-            top_purchases_display = top_purchases.copy()
-            top_purchases_display['Total Spend'] = top_purchases_display['Total Spend'].apply(lambda x: f"${x:,.0f}")
-            top_purchases_display['Units'] = top_purchases_display['Units'].apply(lambda x: f"{int(x):,}")
+            # Build display table with tool_category + process_step
+            display_cols_map = {
+                'po_year': 'Year',
+                'po_quarter': 'Qtr',
+                'vendor': 'Vendor',
+                'equipment_type': 'Equipment Type',
+            }
+            if 'tool_category' in factory_orders.columns:
+                display_cols_map['tool_category'] = 'Tool Category'
+            display_cols_map['process_step'] = 'Process Step'
+
+            factory_display = factory_orders[[c for c in display_cols_map.keys() if c in factory_orders.columns]].copy()
+            factory_display = factory_display.rename(columns=display_cols_map)
+
+            # Add numeric columns with formatting
+            factory_display['Units'] = factory_orders['units'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
+            factory_display['Order Value'] = factory_orders['amount_usd'].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "-")
+            factory_display['Avg Cost/EQ'] = factory_orders.apply(
+                lambda r: f"${r['amount_usd'] / r['units']:,.0f}" if pd.notna(r['units']) and r['units'] > 0 else "-", axis=1
+            )
 
             st.dataframe(
-                top_purchases_display,
+                factory_display,
                 use_container_width=True,
                 hide_index=True,
-                height=400
+                height=500
             )
 
             st.divider()
@@ -230,37 +248,39 @@ with tab1:
             st.markdown(f"### {manufacturer} - All Factories")
 
             # Summary metrics
+            total_spend = orders_df['amount_usd'].sum()
+            total_units = orders_df['units'].sum()
+
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                total_orders = len(orders_df)
-                st.metric("Total Orders", format_with_commas(total_orders))
-
+                st.metric("Total Orders", format_with_commas(len(orders_df)))
             with col2:
-                total_spend = orders_df['amount_usd'].sum()
-                st.metric("Total Spend", format_currency(total_spend))
-
+                st.metric("Total Spend", f"${total_spend:,.0f}")
             with col3:
-                total_units = orders_df['units'].sum()
-                st.metric("Total Units", format_with_commas(total_units))
-
+                st.metric("Equipment Count", format_with_commas(total_units))
             with col4:
                 unique_vendors = orders_df[orders_df['vendor'].notna() & (orders_df['vendor'] != '')]['vendor'].nunique()
                 st.metric("Unique Vendors", format_with_commas(unique_vendors))
 
             st.divider()
 
-            # Table: Equipment Type × Vendor × Process with spend + EQ count
+            # Table: Equipment Type × Vendor × Tool Category × Process
             st.markdown("#### Equipment Purchases by Type, Vendor & Process")
 
-            equipment_vendor_df = orders_df.groupby(['equipment_type', 'vendor', 'process_step']).agg({
+            group_cols = ['equipment_type', 'vendor', 'process_step']
+            rename_cols = ['Equipment Type', 'Vendor', 'Process Step']
+            if 'tool_category' in orders_df.columns:
+                group_cols.insert(2, 'tool_category')
+                rename_cols.insert(2, 'Tool Category')
+
+            equipment_vendor_df = orders_df.groupby(group_cols).agg({
                 'amount_usd': 'sum',
                 'units': 'sum'
             }).reset_index()
-            equipment_vendor_df.columns = ['Equipment Type', 'Vendor', 'Process Step', 'Total Spend', 'Units']
+            equipment_vendor_df.columns = rename_cols + ['Total Spend', 'Units']
             equipment_vendor_df = equipment_vendor_df.sort_values('Total Spend', ascending=False)
 
-            # Format for display
             eq_display = equipment_vendor_df.head(50).copy()
             eq_display['Total Spend'] = eq_display['Total Spend'].apply(lambda x: f"${x:,.0f}")
             eq_display['Units'] = eq_display['Units'].apply(lambda x: f"{int(x):,}")
@@ -274,16 +294,26 @@ with tab1:
 
             st.divider()
 
-            # Spend by Process Step chart
+            # Spend by Process Step — table with % of total + chart
             st.markdown("#### Spend by Process Step")
 
             step_spend = orders_df.groupby('process_step')['amount_usd'].sum().reset_index()
             step_spend.columns = ['Process Step', 'Total Spend']
-            step_spend = step_spend.sort_values('Total Spend', ascending=True)
+            step_total = step_spend['Total Spend'].sum()
+            step_spend['% of Total'] = (step_spend['Total Spend'] / step_total * 100) if step_total > 0 else 0
+            step_spend = step_spend.sort_values('Total Spend', ascending=False)
 
-            if len(step_spend) > 0:
+            step_display = step_spend.copy()
+            step_display['Total Spend'] = step_display['Total Spend'].apply(lambda x: f"${x:,.0f}")
+            step_display['% of Total'] = step_display['% of Total'].apply(lambda x: f"{x:.1f}%")
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.dataframe(step_display, use_container_width=True, hide_index=True)
+            with col2:
+                chart_data = step_spend.sort_values('Total Spend', ascending=True)
                 fig = px.bar(
-                    step_spend,
+                    chart_data,
                     x='Total Spend',
                     y='Process Step',
                     orientation='h'
@@ -382,49 +412,70 @@ with tab1:
 
             st.divider()
 
-            # Spend by Process Step
+            # Spend by Process Step with % of total
             st.markdown("#### Spend by Process Step")
 
             step_spend = orders_df.groupby('process_step')['amount_usd'].sum().reset_index()
             step_spend.columns = ['Process Step', 'Total Spend']
-            step_spend = step_spend.sort_values('Total Spend', ascending=True)
+            step_total = step_spend['Total Spend'].sum()
+            step_spend['% of Total'] = (step_spend['Total Spend'] / step_total * 100) if step_total > 0 else 0
+            step_spend = step_spend.sort_values('Total Spend', ascending=False)
 
-            if len(step_spend) > 0:
-                fig = px.bar(
-                    step_spend,
-                    x='Total Spend',
-                    y='Process Step',
-                    orientation='h'
-                )
-                fig.update_traces(
-                    marker_color=colors[1],
-                    hovertemplate='%{y}<br>Spend: $%{x:,.0f}<extra></extra>'
-                )
-                apply_chart_theme(fig)
-                fig.update_layout(
-                    showlegend=False,
-                    xaxis_title="Total Spend (USD)",
-                    yaxis_title="",
-                    height=350
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            step_display = step_spend.copy()
+            step_display['Total Spend'] = step_display['Total Spend'].apply(lambda x: f"${x:,.0f}")
+            step_display['% of Total'] = step_display['% of Total'].apply(lambda x: f"{x:.1f}%")
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.dataframe(step_display, use_container_width=True, hide_index=True)
+            with col2:
+                chart_data = step_spend.sort_values('Total Spend', ascending=True).copy()
+                chart_data['spend_raw'] = orders_df.groupby('process_step')['amount_usd'].sum().reindex(chart_data['Process Step']).values
+                if len(chart_data) > 0:
+                    fig = px.bar(
+                        chart_data,
+                        x='spend_raw',
+                        y='Process Step',
+                        orientation='h'
+                    )
+                    fig.update_traces(
+                        marker_color=colors[1],
+                        hovertemplate='%{y}<br>Spend: $%{x:,.0f}<extra></extra>'
+                    )
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        showlegend=False,
+                        xaxis_title="Total Spend (USD)",
+                        yaxis_title="",
+                        height=350
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
             st.divider()
 
-            # Equipment Unit Economics (replaces quarterly trend)
+            # Equipment Unit Economics
             st.markdown("#### Equipment Unit Economics")
 
-            # Calculate average unit cost per equipment type
-            unit_economics = orders_df[orders_df['units'] > 0].groupby('equipment_type').agg({
+            has_tool_cat = 'tool_category' in orders_df.columns
+            group_cols_econ = ['equipment_type']
+            if has_tool_cat:
+                group_cols_econ.append('tool_category')
+            group_cols_econ.append('process_step')
+
+            unit_economics = orders_df[orders_df['units'] > 0].groupby(group_cols_econ).agg({
                 'amount_usd': 'sum',
                 'units': 'sum'
             }).reset_index()
             unit_economics['Avg Unit Cost'] = unit_economics['amount_usd'] / unit_economics['units']
             unit_economics = unit_economics.sort_values('Avg Unit Cost', ascending=False)
-            unit_economics.columns = ['Equipment Type', 'Total Spend', 'Total Units', 'Avg Unit Cost']
 
-            # Format for display
-            unit_display = unit_economics.head(20).copy()
+            rename_map = {'equipment_type': 'Equipment Type', 'amount_usd': 'Total Spend',
+                          'units': 'Total Units', 'process_step': 'Process Step'}
+            if has_tool_cat:
+                rename_map['tool_category'] = 'Tool Category'
+            unit_economics = unit_economics.rename(columns=rename_map)
+
+            unit_display = unit_economics.head(25).copy()
             unit_display['Total Spend'] = unit_display['Total Spend'].apply(lambda x: f"${x:,.0f}")
             unit_display['Total Units'] = unit_display['Total Units'].apply(lambda x: f"{int(x):,}")
             unit_display['Avg Unit Cost'] = unit_display['Avg Unit Cost'].apply(lambda x: f"${x:,.0f}")
@@ -433,7 +484,7 @@ with tab1:
                 unit_display,
                 use_container_width=True,
                 hide_index=True,
-                height=400
+                height=500
             )
 
     else:
