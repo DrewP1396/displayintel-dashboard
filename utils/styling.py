@@ -192,14 +192,26 @@ def get_css() -> str:
             border-radius: 16px;
         }
 
-        /* Center align table cells */
+        /* Center-align all table/dataframe cells and headers */
         [data-testid="stDataFrame"] td,
-        [data-testid="stDataFrame"] th {
+        [data-testid="stDataFrame"] th,
+        [data-testid="stTable"] td,
+        [data-testid="stTable"] th,
+        .stDataFrame td,
+        .stDataFrame th {
             text-align: center !important;
         }
 
+        /* glide-data-grid header cells */
+        [data-testid="stDataFrame"] [role="columnheader"],
+        [data-testid="stDataFrame"] .gdg-header-cell {
+            text-align: center !important;
+            justify-content: center !important;
+        }
+
         /* Better table header styling */
-        [data-testid="stDataFrame"] th {
+        [data-testid="stDataFrame"] th,
+        [data-testid="stTable"] th {
             background: #F5F5F7 !important;
             font-weight: 600 !important;
             color: #1D1D1F !important;

@@ -587,9 +587,9 @@ with tab3:
             column_config={
                 "Application": st.column_config.TextColumn("Application", width="medium"),
                 "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
-                "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.1f"),
+                "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
                 "Records": st.column_config.NumberColumn("Records", format="%,.0f"),
-                "Avg Unit Price": st.column_config.NumberColumn("Avg Price ($)", format="$%,.2f")
+                "Avg Unit Price": st.column_config.NumberColumn("Avg Price ($)", format="$%,.0f")
             }
         )
 
@@ -769,8 +769,8 @@ with tab5:
                 "size_inches": st.column_config.NumberColumn("Size (in)", format="%.1f"),
                 "technology": st.column_config.TextColumn("Tech", width="small"),
                 "application": st.column_config.TextColumn("Application", width="small"),
-                "units_k": st.column_config.NumberColumn("Units (K)", format="%,.1f"),
-                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.2f")
+                "units_k": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f")
             }
         )
 

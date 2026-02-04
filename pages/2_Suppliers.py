@@ -639,15 +639,19 @@ with tab3:
     if len(orders_df) > 0:
         st.markdown("#### Equipment Purchase Orders")
 
-        # Display columns - use po_year instead of po_date
+        # Display columns — newest first
         display_cols = [
             'po_year', 'po_quarter', 'manufacturer', 'factory', 'vendor',
-            'equipment_type', 'process_step', 'units', 'amount_usd'
+            'equipment_type', 'tool_category', 'process_step', 'units', 'amount_usd'
         ]
         available_cols = [c for c in display_cols if c in orders_df.columns]
 
+        detail_df = orders_df[available_cols].sort_values(
+            ['po_year', 'po_quarter'], ascending=[False, False]
+        ).head(500)
+
         st.dataframe(
-            orders_df[available_cols].head(500),
+            detail_df,
             use_container_width=True,
             hide_index=True,
             height=500,
@@ -658,6 +662,7 @@ with tab3:
                 "factory": st.column_config.TextColumn("Factory", width="medium"),
                 "vendor": st.column_config.TextColumn("Vendor", width="medium"),
                 "equipment_type": st.column_config.TextColumn("Equipment", width="medium"),
+                "tool_category": st.column_config.TextColumn("Tool Category", width="medium"),
                 "process_step": st.column_config.TextColumn("Process Step", width="medium"),
                 "units": st.column_config.NumberColumn("Units", format="%,.0f"),
                 "amount_usd": st.column_config.NumberColumn("Amount (USD)", format="$%,.0f")

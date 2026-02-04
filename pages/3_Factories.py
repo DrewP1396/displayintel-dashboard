@@ -483,9 +483,9 @@ if selected_factory != "All Factories":
                     "po_year": st.column_config.TextColumn("Year", width="small"),
                     "po_quarter": st.column_config.TextColumn("Qtr", width="small"),
                     "vendor": st.column_config.TextColumn("Vendor", width="medium"),
-                    "equipment_type": st.column_config.TextColumn("Equipment Type", width="medium"),
+                    "equipment_type": st.column_config.TextColumn("Equipment", width="medium"),
                     "units": st.column_config.TextColumn("Units", width="small"),
-                    "amount_usd": st.column_config.TextColumn("Value (USD)", width="medium")
+                    "amount_usd": st.column_config.TextColumn("Value", width="medium")
                 }
             )
         else:
