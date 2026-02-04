@@ -111,9 +111,11 @@ with st.sidebar:
             key="util_start"
         )
     with col2:
+        # Default end date to today (not max DB date which may be years in the future)
+        default_end = min(date.today(), datetime.strptime(max_date, "%Y-%m-%d").date())
         end_date = st.date_input(
             "End",
-            value=datetime.strptime(max_date, "%Y-%m-%d").date(),
+            value=default_end,
             min_value=datetime.strptime(min_date, "%Y-%m-%d").date(),
             max_value=datetime.strptime(max_date, "%Y-%m-%d").date(),
             key="util_end"
@@ -284,6 +286,12 @@ if selected_factory != "All Factories":
             additions = quarterly_cap[quarterly_cap['capacity_change'] > 0.5].copy()
 
             if len(additions) > 0:
+                # Sort additions chronologically
+                additions = additions.sort_values('quarter')
+
+                # Get all quarters in sorted order for x-axis
+                all_quarters = sorted(additions['quarter'].unique())
+
                 # Create stacked bar chart
                 fig = go.Figure()
 
@@ -302,13 +310,15 @@ if selected_factory != "All Factories":
                     yaxis_title="Capacity Added (K/mo)",
                     height=300,
                     barmode='group',
-                    showlegend=True
+                    showlegend=True,
+                    xaxis={'categoryorder': 'array', 'categoryarray': all_quarters}
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
                 # Show table of additions
                 with st.expander("View Capacity Addition Details"):
                     additions_display = additions[['quarter', 'backplane', 'capacity_change', 'capacity_ksheets']].copy()
+                    additions_display = additions_display.sort_values('quarter')
                     additions_display.columns = ['Quarter', 'Backplane', 'Added (K/mo)', 'Total (K/mo)']
                     additions_display['Added (K/mo)'] = additions_display['Added (K/mo)'].apply(lambda x: f"{x:,.1f}")
                     additions_display['Total (K/mo)'] = additions_display['Total (K/mo)'].apply(lambda x: f"{x:,.1f}")
