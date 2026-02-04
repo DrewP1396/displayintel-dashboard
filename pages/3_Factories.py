@@ -337,6 +337,11 @@ if selected_factory != "All Factories":
             factory_name=selected_factory
         )
 
+        # Filter out future quarters with no actual data (all 0%)
+        if len(util_df) > 0:
+            current_quarter_end = pd.Timestamp.today().to_period('Q').end_time.strftime("%Y-%m-%d")
+            util_df = util_df[util_df['date'] <= current_quarter_end]
+
         # Current metrics from latest utilization with actual data (not projections)
         if len(util_df) > 0:
             # Get latest date with actual input > 0
@@ -654,6 +659,11 @@ else:
             st.error(f"Error loading utilization data: {str(e)}")
             st.stop()
 
+        # Filter out future quarters with no actual data
+        if len(util_df) > 0:
+            current_quarter_end = pd.Timestamp.today().to_period('Q').end_time.strftime("%Y-%m-%d")
+            util_df = util_df[util_df['date'] <= current_quarter_end]
+
         if len(util_df) > 0:
             # Summary metrics
             col1, col2, col3, col4 = st.columns(4)
@@ -804,6 +814,11 @@ else:
         except Exception as e:
             st.error(f"Error loading capacity data: {str(e)}")
             st.stop()
+
+        # Filter out future quarters with no actual data
+        if len(util_df) > 0:
+            current_quarter_end = pd.Timestamp.today().to_period('Q').end_time.strftime("%Y-%m-%d")
+            util_df = util_df[util_df['date'] <= current_quarter_end]
 
         if len(util_df) > 0:
             st.markdown("#### Total Industry Capacity Over Time")
