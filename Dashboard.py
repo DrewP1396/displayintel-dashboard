@@ -16,12 +16,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils.styling import get_css
 from utils.database import DatabaseManager, format_integer, format_percent
 
-# Page configuration
+
+def _is_authenticated() -> bool:
+    """Check if user is currently authenticated."""
+    return st.session_state.get("password_correct", False)
+
+
+# Page configuration — collapse sidebar when not authenticated
 st.set_page_config(
     page_title="Display Intelligence",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded" if _is_authenticated() else "collapsed",
     menu_items={
         'About': "Display Intelligence Dashboard - Industry Analytics Platform"
     }
@@ -31,81 +37,104 @@ st.set_page_config(
 st.markdown(get_css(), unsafe_allow_html=True)
 
 
-def check_password() -> bool:
-    """Check if password is correct using Streamlit secrets."""
+def _login_page():
+    """Render a full-screen, professional login page."""
 
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        try:
-            correct_password = st.secrets["password"]
-        except (KeyError, FileNotFoundError):
-            # Fallback for local development
-            correct_password = "displayintel2024"
-
-        if st.session_state["password"] == correct_password:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Remove password from state
-        else:
-            st.session_state["password_correct"] = False
-
-    # Check if already authenticated
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # Show login form
+    # Hide sidebar, header chrome, and page nav while on login screen
     st.markdown("""
-        <div style="text-align: center; padding: 3rem 0;">
-            <div style="font-size: 4rem; margin-bottom: 1rem;">📊</div>
-            <h1 style="font-size: 2.5rem; font-weight: 700; color: #1D1D1F; margin-bottom: 0.5rem;">
+    <style>
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarNav"],
+        [data-testid="collapsedControl"] {
+            display: none !important;
+        }
+        .main .block-container {
+            max-width: 480px;
+            padding-top: 8vh;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Branding
+    st.markdown("""
+        <div style="text-align: center; margin-bottom: 2.5rem;">
+            <div style="
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 72px; height: 72px;
+                background: linear-gradient(135deg, #007AFF 0%, #5856D6 100%);
+                border-radius: 18px;
+                margin-bottom: 1.25rem;
+            ">
+                <span style="font-size: 2rem; color: white; line-height: 1;">&#x1F4CA;</span>
+            </div>
+            <h1 style="font-size: 1.75rem; font-weight: 700; color: #1D1D1F; margin: 0 0 0.25rem;">
                 Display Intelligence
             </h1>
-            <p style="color: #86868B; font-size: 1.1rem; margin-bottom: 2rem;">
+            <p style="color: #86868B; font-size: 0.95rem; margin: 0;">
                 Industry Analytics Platform
             </p>
         </div>
     """, unsafe_allow_html=True)
 
-    # Center the login form
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    with col2:
-        st.markdown("""
-            <div style="
-                background: white;
-                padding: 2rem;
-                border-radius: 20px;
-                box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-                border: 1px solid #E5E5E7;
-            ">
-        """, unsafe_allow_html=True)
-
-        st.text_input(
-            "Password",
-            type="password",
-            key="password",
-            on_change=password_entered,
-            placeholder="Enter your password"
-        )
-
-        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-            st.error("Incorrect password. Please try again.")
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("""
-            <p style="text-align: center; color: #86868B; font-size: 0.875rem; margin-top: 2rem;">
-                Contact your administrator for access credentials.
+    # Login card
+    st.markdown("""
+        <div style="
+            background: #FFFFFF;
+            border: 1px solid #E5E5E7;
+            border-radius: 16px;
+            padding: 2rem 1.75rem 1.5rem;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        ">
+            <p style="font-size: 0.95rem; font-weight: 600; color: #1D1D1F; margin: 0 0 0.25rem;">
+                Sign in
             </p>
-        """, unsafe_allow_html=True)
+            <p style="font-size: 0.8125rem; color: #86868B; margin: 0 0 1rem;">
+                Enter your team password to continue.
+            </p>
+    """, unsafe_allow_html=True)
 
-    return False
+    def _on_submit():
+        try:
+            correct = st.secrets["password"]
+        except (KeyError, FileNotFoundError):
+            correct = "displayintel2024"
+
+        if st.session_state["_login_pw"] == correct:
+            st.session_state["password_correct"] = True
+        else:
+            st.session_state["password_correct"] = False
+        # Always clear the password from state
+        st.session_state["_login_pw"] = ""
+
+    st.text_input(
+        "Password",
+        type="password",
+        key="_login_pw",
+        on_change=_on_submit,
+        placeholder="Password",
+        label_visibility="collapsed",
+    )
+
+    if st.session_state.get("password_correct") is False:
+        st.error("Incorrect password. Please try again.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("""
+        <p style="text-align: center; color: #86868B; font-size: 0.75rem; margin-top: 1.5rem;">
+            Contact your administrator for access credentials.
+        </p>
+    """, unsafe_allow_html=True)
 
 
 def main():
     """Main dashboard application."""
 
-    # Password protection
-    if not check_password():
+    # Gate: show login page until authenticated
+    if not _is_authenticated():
+        _login_page()
         return
 
     # Sidebar
