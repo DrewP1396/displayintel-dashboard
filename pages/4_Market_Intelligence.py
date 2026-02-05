@@ -50,12 +50,6 @@ with st.sidebar:
         key="intel_panel_maker"
     )
 
-    technology = st.selectbox(
-        "Technology",
-        options=DatabaseManager.get_technologies(),
-        key="intel_technology"
-    )
-
     application = st.selectbox(
         "Application",
         options=DatabaseManager.get_applications(),
@@ -77,7 +71,7 @@ with st.sidebar:
         end_year = st.selectbox(
             "End Year",
             options=list(range(2016, 2030)),
-            index=13,  # Default to 2029
+            index=10,  # Default to 2026
             key="intel_end_year"
         )
 
@@ -92,12 +86,22 @@ def format_revenue_m(value_m):
     return f"${value_m:,.1f}M"
 
 
+def format_units_k(value_k):
+    """Format a units value that is already in K."""
+    if pd.isna(value_k) or value_k == 0:
+        return "0"
+    if value_k >= 1_000_000:
+        return f"{value_k / 1_000_000:,.1f}B"
+    if value_k >= 1_000:
+        return f"{value_k / 1_000:,.1f}M"
+    return f"{value_k:,.0f}K"
+
+
 # Load shipment data
 shipments_df = DatabaseManager.get_shipments(
     start_year=start_year,
     end_year=end_year,
     panel_maker=panel_maker,
-    technology=technology,
     application=application
 )
 
@@ -105,74 +109,66 @@ shipments_df = DatabaseManager.get_shipments(
 theme = get_plotly_theme()
 colors = theme['color_discrete_sequence']
 
-# Pre-compute common filtered dataframes once (performance optimization)
-# These are reused across multiple tabs
+# Pre-compute common filtered dataframes once
 if len(shipments_df) > 0:
-    # Valid panel makers (exclude ALL and /Others aggregates) - used in Tab 1, 2, 4
+    # Valid panel makers (exclude ALL and /Others aggregates)
     valid_makers_df = shipments_df[
         shipments_df['panel_maker'].notna() &
         (shipments_df['panel_maker'] != '') &
         (shipments_df['panel_maker'] != 'ALL') &
         (~shipments_df['panel_maker'].str.contains('/Others', na=False))
     ]
-    # Valid technologies - used in Tab 1, 2
-    valid_tech_df = shipments_df[shipments_df['technology'].notna() & (shipments_df['technology'] != '')]
-    # Valid applications - used in Tab 1, 2, 3
+    # Valid applications
     valid_apps_df = shipments_df[shipments_df['application'].notna() & (shipments_df['application'] != '')]
+    # Time series base (exclude annual aggregates)
+    ts_df = shipments_df[~shipments_df['date'].str.contains('ALL', na=False)].copy()
+    ts_df['period'] = ts_df['date'].str.split(' ').str[0]
 
 # Main content tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Competitive Analysis", "Application Analysis", "Panel Makers", "Detailed Data"])
+tab1, tab2, tab3, tab4 = st.tabs(["Market Overview", "Supplier Analysis", "Application Analysis", "Detailed Data"])
 
+# =============================================================================
 # Tab 1: Market Overview
+# =============================================================================
 with tab1:
     if len(shipments_df) > 0:
-        # Summary metrics
+        # Summary metrics row
         col1, col2, col3, col4 = st.columns(4)
 
-        with col1:
-            total_units = shipments_df['units_k'].sum()
-            if total_units >= 1000000:
-                units_str = f"{total_units/1000000:,.1f}B"
-            elif total_units >= 1000:
-                units_str = f"{total_units/1000:,.1f}M"
-            else:
-                units_str = f"{total_units:,.0f}K"
-            st.metric(f"Total Units ({start_year}-{end_year})", units_str)
+        total_revenue = shipments_df['revenue_m'].sum()
+        total_units = shipments_df['units_k'].sum()
 
-        with col2:
-            total_revenue = shipments_df['revenue_m'].sum()
+        with col1:
             st.metric(f"Total Revenue ({start_year}-{end_year})", format_revenue_m(total_revenue))
 
+        with col2:
+            st.metric(f"Total Units ({start_year}-{end_year})", format_units_k(total_units))
+
         with col3:
-            # Use pre-computed valid_makers_df (performance optimization)
-            unique_makers = valid_makers_df['panel_maker'].nunique()
-            st.metric("Panel Makers", format_with_commas(unique_makers))
+            # Average ASP: revenue_m * 1000 / units_k gives $ per unit
+            avg_asp = (total_revenue * 1000 / total_units) if total_units > 0 else 0
+            st.metric("Avg ASP", f"${avg_asp:,.0f}")
 
         with col4:
-            # Use pre-computed valid_apps_df (performance optimization)
-            unique_apps = valid_apps_df['application'].nunique()
-            st.metric("Applications", format_with_commas(unique_apps))
+            unique_suppliers = valid_makers_df['panel_maker'].nunique()
+            st.metric("Active Suppliers", format_with_commas(unique_suppliers))
 
         st.divider()
 
-        # Shipments over time
-        st.markdown("#### Shipment Volume Trends")
+        # OLED Market Trends - quarterly revenue + units dual-axis
+        st.markdown("#### OLED Market Trends")
 
-        # Filter out annual aggregates (ALL) for cleaner time series
-        shipments_ts = shipments_df[~shipments_df['date'].str.contains('ALL', na=False)].copy()
-        shipments_ts['period'] = shipments_ts['date'].str.split(' ').str[0]
-        monthly_shipments = shipments_ts.groupby('period').agg({
+        quarterly = ts_df.groupby('period').agg({
             'units_k': 'sum',
             'revenue_m': 'sum'
-        }).reset_index()
-        monthly_shipments = monthly_shipments.sort_values('period')
+        }).reset_index().sort_values('period')
 
-        if len(monthly_shipments) > 0:
+        if len(quarterly) > 0:
             fig = go.Figure()
 
             fig.add_trace(go.Bar(
-                x=monthly_shipments['period'].tolist(),
-                y=monthly_shipments['units_k'].tolist(),
+                x=quarterly['period'].tolist(),
+                y=quarterly['units_k'].tolist(),
                 name='Units (K)',
                 marker_color=colors[0],
                 opacity=0.7,
@@ -180,8 +176,8 @@ with tab1:
             ))
 
             fig.add_trace(go.Scatter(
-                x=monthly_shipments['period'].tolist(),
-                y=monthly_shipments['revenue_m'].tolist(),
+                x=quarterly['period'].tolist(),
+                y=quarterly['revenue_m'].tolist(),
                 name='Revenue ($M)',
                 mode='lines+markers',
                 yaxis='y2',
@@ -202,14 +198,13 @@ with tab1:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # Market composition
+        # Side-by-side pies: Revenue by Application | Revenue by Supplier
         st.divider()
         col1, col2 = st.columns(2)
 
         with col1:
             st.markdown("#### Revenue by Application")
 
-            # Use pre-computed valid_apps_df (performance optimization)
             app_revenue = valid_apps_df.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
 
             if len(app_revenue) > 0:
@@ -225,19 +220,24 @@ with tab1:
                 st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            st.markdown("#### Units by Technology")
+            st.markdown("#### Revenue by Supplier")
 
-            # Use pre-computed valid_tech_df (performance optimization)
-            tech_units = valid_tech_df.groupby('technology')['units_k'].sum()
+            maker_revenue = valid_makers_df.groupby('panel_maker')['revenue_m'].sum().sort_values(ascending=False)
 
-            if len(tech_units) > 0:
+            if len(maker_revenue) > 0:
+                top_5 = maker_revenue.head(5)
+                others = maker_revenue.iloc[5:].sum() if len(maker_revenue) > 5 else 0
+
+                pie_names = top_5.index.tolist() + (['Others'] if others > 0 else [])
+                pie_values = top_5.values.tolist() + ([others] if others > 0 else [])
+
                 fig = px.pie(
-                    values=tech_units.values.tolist(),
-                    names=tech_units.index.tolist(),
+                    values=pie_values,
+                    names=pie_names,
                     color_discrete_sequence=colors,
                     hole=0.4
                 )
-                fig.update_traces(hovertemplate='%{label}<br>%{value:,.0f}K (%{percent})<extra></extra>')
+                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
                 apply_chart_theme(fig)
                 fig.update_layout(height=350)
                 st.plotly_chart(fig, use_container_width=True)
@@ -246,339 +246,212 @@ with tab1:
         st.info("No shipment data available for the selected filters.")
 
 
-# Tab 2: Competitive Analysis
+# =============================================================================
+# Tab 2: Supplier Analysis
+# =============================================================================
 with tab2:
     if len(shipments_df) > 0:
-        st.markdown("#### Competitive Products Analysis")
-        st.markdown("""
-        <p style="color: #86868B; margin-bottom: 1.5rem;">
-            Compare panel makers across technologies, applications, and market performance
-        </p>
-        """, unsafe_allow_html=True)
+        # --- Top Suppliers Table ---
+        st.markdown("#### Top Suppliers")
 
-        # Technology Breakdown Section
-        st.markdown("##### Technology Breakdown: LCD vs OLED")
+        maker_agg = valid_makers_df.groupby('panel_maker').agg({
+            'revenue_m': 'sum',
+            'units_k': 'sum'
+        }).reset_index().sort_values('revenue_m', ascending=False)
 
-        # Use pre-computed valid_tech_df (performance optimization)
-        tech_df = valid_tech_df
+        total_market_revenue = maker_agg['revenue_m'].sum()
+        maker_agg['Market Share %'] = (maker_agg['revenue_m'] / total_market_revenue * 100) if total_market_revenue > 0 else 0
 
-        col1, col2 = st.columns(2)
+        # Find top application per supplier
+        maker_app = valid_makers_df.groupby(['panel_maker', 'application'])['revenue_m'].sum().reset_index()
+        top_app_per_maker = maker_app.loc[maker_app.groupby('panel_maker')['revenue_m'].idxmax()][['panel_maker', 'application']]
+        top_app_per_maker.columns = ['panel_maker', 'Top Application']
+
+        maker_table = maker_agg.merge(top_app_per_maker, on='panel_maker', how='left')
+        maker_table.columns = ['Supplier', 'Revenue ($M)', 'Units (K)', 'Market Share %', 'Top Application']
+
+        st.dataframe(
+            maker_table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Supplier": st.column_config.TextColumn("Supplier", width="medium"),
+                "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                "Market Share %": st.column_config.NumberColumn("Market Share %", format="%.1f%%"),
+                "Top Application": st.column_config.TextColumn("Top Application", width="medium")
+            }
+        )
+
+        st.divider()
+
+        # --- Supplier Revenue Trends (top 5) ---
+        st.markdown("#### Supplier Revenue Trends")
+
+        top_5_suppliers = maker_agg.head(5)['Supplier'].tolist()
+        maker_ts = ts_df[
+            ts_df['panel_maker'].isin(top_5_suppliers)
+        ].groupby(['period', 'panel_maker'])['revenue_m'].sum().reset_index().sort_values('period')
+
+        if len(maker_ts) > 0:
+            fig = px.line(
+                maker_ts,
+                x='period',
+                y='revenue_m',
+                color='panel_maker',
+                color_discrete_sequence=colors,
+                markers=True
+            )
+            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Quarter",
+                yaxis_title="Revenue ($M)",
+                height=400,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # --- Market Concentration Card ---
+        col1, col2, col3 = st.columns(3)
+
+        maker_revenue_series = maker_agg.set_index('Supplier')['Revenue ($M)']
 
         with col1:
-            tech_revenue = tech_df.groupby('technology').agg({
+            top_maker = maker_revenue_series.index[0] if len(maker_revenue_series) > 0 else "N/A"
+            top_maker_share = (maker_revenue_series.iloc[0] / total_market_revenue * 100) if total_market_revenue > 0 else 0
+            st.markdown(f"""
+            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem;">
+                <p style="color: #86868B; margin-bottom: 0.5rem;">Market Leader</p>
+                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{top_maker}</p>
+                <p style="color: #007AFF;">{top_maker_share:.1f}% market share</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            top_3_share = (maker_revenue_series.head(3).sum() / total_market_revenue * 100) if total_market_revenue > 0 else 0
+            st.markdown(f"""
+            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem;">
+                <p style="color: #86868B; margin-bottom: 0.5rem;">Top 3 Share</p>
+                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{top_3_share:.1f}%</p>
+                <p style="color: #86868B;">Combined revenue share</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            hhi = sum((r / total_market_revenue * 100) ** 2 for r in maker_revenue_series.values) if total_market_revenue > 0 else 0
+            concentration = "High" if hhi > 2500 else "Moderate" if hhi > 1500 else "Low"
+            st.markdown(f"""
+            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem;">
+                <p style="color: #86868B; margin-bottom: 0.5rem;">HHI Index</p>
+                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{hhi:,.0f}</p>
+                <p style="color: #86868B;">{concentration} concentration</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # --- Supplier Drill-down ---
+        st.markdown("#### Supplier Drill-down")
+
+        supplier_list = maker_agg['Supplier'].tolist()
+        selected_supplier = st.selectbox(
+            "Select a supplier",
+            options=supplier_list,
+            key="supplier_drilldown"
+        )
+
+        if selected_supplier:
+            supplier_data = valid_makers_df[valid_makers_df['panel_maker'] == selected_supplier]
+            supplier_app = supplier_data.groupby('application').agg({
                 'revenue_m': 'sum',
                 'units_k': 'sum'
-            }).reset_index()
-            tech_revenue['market_share'] = tech_revenue['revenue_m'] / tech_revenue['revenue_m'].sum() * 100
+            }).reset_index().sort_values('revenue_m', ascending=False)
 
-            if len(tech_revenue) > 0:
-                fig = px.pie(
-                    tech_revenue,
-                    values='revenue_m',
-                    names='technology',
-                    title='Revenue Share by Technology',
-                    color_discrete_sequence=colors,
-                    hole=0.4
-                )
-                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
-                apply_chart_theme(fig)
-                fig.update_layout(height=350)
-                st.plotly_chart(fig, use_container_width=True)
+            if len(supplier_app) > 0:
+                col1, col2 = st.columns(2)
 
-        with col2:
-            if len(tech_revenue) > 0:
-                fig = px.bar(
-                    tech_revenue,
-                    x='technology',
-                    y='units_k',
-                    title='Total Units by Technology (K)',
-                    color='technology',
-                    color_discrete_sequence=colors
-                )
-                fig.update_traces(hovertemplate='%{x}<br>%{y:,.0f}K units<extra></extra>')
-                apply_chart_theme(fig)
-                fig.update_layout(showlegend=False, height=350)
-                st.plotly_chart(fig, use_container_width=True)
+                with col1:
+                    fig = px.bar(
+                        supplier_app,
+                        x='application',
+                        y='revenue_m',
+                        color='application',
+                        color_discrete_sequence=colors
+                    )
+                    fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        title=f"{selected_supplier} — Revenue by Application",
+                        showlegend=False,
+                        xaxis_title="Application",
+                        yaxis_title="Revenue ($M)",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
-        st.divider()
+                with col2:
+                    supplier_app_display = supplier_app.copy()
+                    supplier_app_display['ASP ($)'] = (
+                        supplier_app_display['revenue_m'] * 1000 / supplier_app_display['units_k']
+                    ).where(supplier_app_display['units_k'] > 0, 0)
+                    supplier_app_display.columns = ['Application', 'Revenue ($M)', 'Units (K)', 'ASP ($)']
 
-        # Technology trends over time
-        st.markdown("##### Technology Trends Over Time")
-
-        tech_ts = tech_df[~tech_df['date'].str.contains('ALL', na=False)].copy()
-        tech_ts['period'] = tech_ts['date'].str.split(' ').str[0]
-        tech_trends = tech_ts.groupby(['period', 'technology']).agg({
-            'revenue_m': 'sum',
-            'units_k': 'sum'
-        }).reset_index()
-        tech_trends = tech_trends.sort_values('period')
-
-        if len(tech_trends) > 0:
-            fig = px.area(
-                tech_trends,
-                x='period',
-                y='revenue_m',
-                color='technology',
-                title='Revenue by Technology Over Time',
-                color_discrete_sequence=colors
-            )
-            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Quarter",
-                yaxis_title="Revenue ($M)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Panel Maker Market Share Section
-        st.markdown("##### Panel Maker Market Share")
-
-        # Use pre-computed valid_makers_df (performance optimization)
-        maker_df = valid_makers_df
-
-        maker_share = maker_df.groupby('panel_maker').agg({
-            'revenue_m': 'sum',
-            'units_k': 'sum'
-        }).reset_index()
-        maker_share = maker_share.sort_values('revenue_m', ascending=False)
-        maker_share['market_share'] = maker_share['revenue_m'] / maker_share['revenue_m'].sum() * 100
-
-        # Top 10 panel makers
-        top_10_makers = maker_share.head(10)
-
-        if len(top_10_makers) > 0:
-            fig = px.bar(
-                top_10_makers,
-                x='market_share',
-                y='panel_maker',
-                orientation='h',
-                title='Top 10 Panel Makers by Market Share (%)',
-                color='market_share',
-                color_continuous_scale='Blues'
-            )
-            fig.update_traces(hovertemplate='%{y}<br>%{x:.1f}% market share<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                showlegend=False,
-                xaxis_title="Market Share (%)",
-                yaxis_title="",
-                height=450
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Panel Maker by Technology breakdown
-        st.markdown("##### Panel Maker Portfolio by Technology")
-
-        # Use pre-computed valid_makers_df filtered by valid technology (performance optimization)
-        maker_tech_df = valid_makers_df[
-            valid_makers_df['technology'].notna() &
-            (valid_makers_df['technology'] != '')
-        ]
-        maker_tech = maker_tech_df.groupby(['panel_maker', 'technology'])['revenue_m'].sum().reset_index()
-        top_makers_list = maker_share.head(8)['panel_maker'].tolist()
-        maker_tech_filtered = maker_tech[maker_tech['panel_maker'].isin(top_makers_list)]
-
-        if len(maker_tech_filtered) > 0:
-            fig = px.bar(
-                maker_tech_filtered,
-                x='panel_maker',
-                y='revenue_m',
-                color='technology',
-                title='Technology Mix by Panel Maker',
-                barmode='stack',
-                color_discrete_sequence=colors
-            )
-            fig.update_traces(hovertemplate='%{x}<br>%{y:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Panel Maker",
-                yaxis_title="Revenue ($M)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Application Trends Section
-        st.markdown("##### Application Market Trends")
-
-        # Use pre-computed valid_apps_df (performance optimization)
-        app_df = valid_apps_df
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            app_share = app_df.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
-            top_apps = app_share.head(6)
-
-            if len(top_apps) > 0:
-                fig = px.pie(
-                    values=top_apps.values.tolist(),
-                    names=top_apps.index.tolist(),
-                    title='Revenue by Application',
-                    color_discrete_sequence=colors,
-                    hole=0.4
-                )
-                fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
-                apply_chart_theme(fig)
-                fig.update_layout(height=350)
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            app_units = app_df.groupby('application')['units_k'].sum().sort_values(ascending=False).head(6)
-
-            if len(app_units) > 0:
-                fig = px.bar(
-                    x=app_units.index.tolist(),
-                    y=app_units.values.tolist(),
-                    title='Units by Application (K)'
-                )
-                fig.update_traces(marker_color=colors[0], hovertemplate='%{x}<br>%{y:,.0f}K units<extra></extra>')
-                apply_chart_theme(fig)
-                fig.update_layout(
-                    showlegend=False,
-                    xaxis_title="Application",
-                    yaxis_title="Units (K)",
-                    height=350
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        # Application trends over time
-        app_ts = app_df[~app_df['date'].str.contains('ALL', na=False)].copy()
-        app_ts['period'] = app_ts['date'].str.split(' ').str[0]
-        app_trends = app_ts.groupby(['period', 'application']).agg({
-            'revenue_m': 'sum'
-        }).reset_index()
-        app_trends = app_trends.sort_values('period')
-
-        # Filter to top 5 applications
-        top_5_apps = app_share.head(5).index.tolist()
-        app_trends_filtered = app_trends[app_trends['application'].isin(top_5_apps)]
-
-        if len(app_trends_filtered) > 0:
-            fig = px.line(
-                app_trends_filtered,
-                x='period',
-                y='revenue_m',
-                color='application',
-                title='Application Revenue Trends (Top 5)',
-                color_discrete_sequence=colors,
-                markers=True
-            )
-            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Quarter",
-                yaxis_title="Revenue ($M)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Summary metrics table
-        st.markdown("##### Competitive Summary")
-
-        total_revenue_sum = maker_share['revenue_m'].sum() if len(maker_share) > 0 else 0
-        total_units_sum = maker_share['units_k'].sum() if len(maker_share) > 0 else 0
-        top_tech = tech_revenue.loc[tech_revenue['revenue_m'].idxmax(), 'technology'] if len(tech_revenue) > 0 else 'N/A'
-        top_maker = maker_share.iloc[0]['panel_maker'] if len(maker_share) > 0 else 'N/A'
-        top_app = app_share.index[0] if len(app_share) > 0 else 'N/A'
-
-        # Format units: units_k values are in thousands
-        if total_units_sum >= 1_000_000:
-            units_str = f"{total_units_sum / 1_000_000:,.1f}B"
-        elif total_units_sum >= 1_000:
-            units_str = f"{total_units_sum / 1_000:,.1f}M"
-        else:
-            units_str = f"{total_units_sum:,.0f}K"
-
-        summary_data = pd.DataFrame({
-            'Metric': [
-                f'Total Market Revenue ({start_year}-{end_year})',
-                f'Total Units Shipped ({start_year}-{end_year})',
-                'Top Technology', 'Market Leader', 'Top Application'
-            ],
-            'Value': [
-                format_revenue_m(total_revenue_sum),
-                units_str,
-                top_tech,
-                top_maker,
-                top_app
-            ]
-        })
-
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(
-                summary_data,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
-                    "Value": st.column_config.TextColumn("Value", width="medium")
-                }
-            )
+                    st.dataframe(
+                        supplier_app_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Application": st.column_config.TextColumn("Application", width="medium"),
+                            "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                            "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                            "ASP ($)": st.column_config.NumberColumn("ASP ($)", format="$%,.0f")
+                        }
+                    )
+            else:
+                st.info(f"No application breakdown data for {selected_supplier}.")
 
     else:
-        st.info("No competitive data available for the selected filters.")
+        st.info("No supplier data available for the selected filters.")
 
 
+# =============================================================================
 # Tab 3: Application Analysis
+# =============================================================================
 with tab3:
     if len(shipments_df) > 0:
-        st.markdown("#### Application Performance Over Time")
+        # --- Application Summary Table ---
+        st.markdown("#### Application Summary")
 
-        # Use pre-computed valid_apps_df (performance optimization)
-        app_data = valid_apps_df
-        app_ts = app_data[~app_data['date'].str.contains('ALL', na=False)].copy()
-        app_ts['period'] = app_ts['date'].str.split(' ').str[0]
-        app_monthly = app_ts.groupby(['period', 'application']).agg({
+        app_summary = valid_apps_df.groupby('application').agg({
             'units_k': 'sum',
             'revenue_m': 'sum'
         }).reset_index()
-        app_monthly = app_monthly.sort_values('period')
+        app_summary['ASP ($)'] = (app_summary['revenue_m'] * 1000 / app_summary['units_k']).where(
+            app_summary['units_k'] > 0, 0
+        )
 
-        if len(app_monthly) > 0:
-            fig = px.line(
-                app_monthly,
-                x='period',
-                y='units_k',
-                color='application',
-                color_discrete_sequence=colors,
-                markers=True
-            )
-            fig.update_traces(hovertemplate='%{x}<br>%{y:,.0f}K units<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Quarter",
-                yaxis_title="Units (K)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        # Top supplier per application
+        app_maker = valid_apps_df[
+            valid_apps_df['panel_maker'].notna() &
+            (valid_apps_df['panel_maker'] != '') &
+            (valid_apps_df['panel_maker'] != 'ALL') &
+            (~valid_apps_df['panel_maker'].str.contains('/Others', na=False))
+        ].groupby(['application', 'panel_maker'])['revenue_m'].sum().reset_index()
 
-        st.divider()
+        if len(app_maker) > 0:
+            top_supplier_per_app = app_maker.loc[
+                app_maker.groupby('application')['revenue_m'].idxmax()
+            ][['application', 'panel_maker']]
+            top_supplier_per_app.columns = ['application', 'Top Supplier']
+            app_summary = app_summary.merge(top_supplier_per_app, on='application', how='left')
+        else:
+            app_summary['Top Supplier'] = 'N/A'
 
-        # Application breakdown table
-        st.markdown("#### Application Summary")
-
-        app_summary = app_data.groupby('application').agg({
-            'units_k': 'sum',
-            'revenue_m': 'sum',
-            'id': 'count'
-        }).reset_index()
-        app_summary.columns = ['Application', 'Units (K)', 'Revenue ($M)', 'Records']
-        app_summary['Avg Unit Price'] = app_summary['Revenue ($M)'] * 1000 / app_summary['Units (K)']
-        app_summary = app_summary.sort_values('Revenue ($M)', ascending=False)
+        app_summary = app_summary.sort_values('revenue_m', ascending=False)
+        app_summary.columns = ['Application', 'Units (K)', 'Revenue ($M)', 'ASP ($)', 'Top Supplier']
 
         st.dataframe(
             app_summary,
@@ -588,12 +461,111 @@ with tab3:
                 "Application": st.column_config.TextColumn("Application", width="medium"),
                 "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
                 "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
-                "Records": st.column_config.NumberColumn("Records", format="%,.0f"),
-                "Avg Unit Price": st.column_config.NumberColumn("Avg Price ($)", format="$%,.0f")
+                "ASP ($)": st.column_config.NumberColumn("ASP ($)", format="$%,.0f"),
+                "Top Supplier": st.column_config.TextColumn("Top Supplier", width="medium")
             }
         )
 
-        # Size distribution by application
+        st.divider()
+
+        # --- Application Revenue Trends (top 5) ---
+        st.markdown("#### Application Trends")
+
+        app_revenue_totals = valid_apps_df.groupby('application')['revenue_m'].sum().sort_values(ascending=False)
+        top_5_apps = app_revenue_totals.head(5).index.tolist()
+
+        app_ts = ts_df[
+            ts_df['application'].isin(top_5_apps) &
+            ts_df['application'].notna() &
+            (ts_df['application'] != '')
+        ].groupby(['period', 'application'])['revenue_m'].sum().reset_index().sort_values('period')
+
+        if len(app_ts) > 0:
+            fig = px.line(
+                app_ts,
+                x='period',
+                y='revenue_m',
+                color='application',
+                color_discrete_sequence=colors,
+                markers=True
+            )
+            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+            apply_chart_theme(fig)
+            fig.update_layout(
+                xaxis_title="Quarter",
+                yaxis_title="Revenue ($M)",
+                height=400,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # --- Application Drill-down ---
+        st.markdown("#### Application Drill-down")
+
+        app_list = app_revenue_totals.index.tolist()
+        selected_app = st.selectbox(
+            "Select an application",
+            options=app_list,
+            key="app_drilldown"
+        )
+
+        if selected_app:
+            app_drill_data = valid_makers_df[
+                valid_makers_df['application'].notna() &
+                (valid_makers_df['application'] == selected_app)
+            ]
+            app_supplier = app_drill_data.groupby('panel_maker').agg({
+                'revenue_m': 'sum',
+                'units_k': 'sum'
+            }).reset_index().sort_values('revenue_m', ascending=False)
+
+            if len(app_supplier) > 0:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    fig = px.bar(
+                        app_supplier,
+                        x='panel_maker',
+                        y='revenue_m',
+                        color='panel_maker',
+                        color_discrete_sequence=colors
+                    )
+                    fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+                    apply_chart_theme(fig)
+                    fig.update_layout(
+                        title=f"{selected_app} — Revenue by Supplier",
+                        showlegend=False,
+                        xaxis_title="Supplier",
+                        yaxis_title="Revenue ($M)",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    app_supplier_display = app_supplier.copy()
+                    total_app_rev = app_supplier_display['revenue_m'].sum()
+                    app_supplier_display['Share %'] = (
+                        app_supplier_display['revenue_m'] / total_app_rev * 100
+                    ) if total_app_rev > 0 else 0
+                    app_supplier_display.columns = ['Supplier', 'Revenue ($M)', 'Units (K)', 'Share %']
+
+                    st.dataframe(
+                        app_supplier_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Supplier": st.column_config.TextColumn("Supplier", width="medium"),
+                            "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                            "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                            "Share %": st.column_config.NumberColumn("Share %", format="%.1f%%")
+                        }
+                    )
+            else:
+                st.info(f"No supplier data for {selected_app}.")
+
+        # --- Size Distribution ---
         if 'size_inches' in shipments_df.columns:
             size_data = shipments_df[shipments_df['size_inches'].notna() & shipments_df['application'].notna()]
             if len(size_data) > 0:
@@ -620,133 +592,10 @@ with tab3:
         st.info("No application data available.")
 
 
-# Tab 4: Panel Makers
+# =============================================================================
+# Tab 4: Detailed Data
+# =============================================================================
 with tab4:
-    if len(shipments_df) > 0:
-        st.markdown("#### Panel Maker Market Share")
-
-        # Use pre-computed valid_makers_df (performance optimization)
-        maker_data = valid_makers_df
-        maker_revenue = maker_data.groupby('panel_maker')['revenue_m'].sum().sort_values(ascending=False)
-        total_revenue = maker_revenue.sum()
-
-        # Top panel makers bar chart
-        top_makers = maker_revenue.head(15)
-
-        if len(top_makers) > 0:
-            fig = px.bar(
-                x=top_makers.values.tolist(),
-                y=top_makers.index.tolist(),
-                orientation='h'
-            )
-            fig.update_traces(marker_color=colors[0], hovertemplate='%{y}<br>$%{x:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                showlegend=False,
-                xaxis_title="Revenue ($M)",
-                yaxis_title="",
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        # Market share pie
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("#### Revenue Share")
-
-            top_5 = maker_revenue.head(5)
-            others = maker_revenue.iloc[5:].sum() if len(maker_revenue) > 5 else 0
-
-            pie_data = pd.DataFrame({
-                'Maker': top_5.index.tolist() + (['Others'] if others > 0 else []),
-                'Revenue': top_5.values.tolist() + ([others] if others > 0 else [])
-            })
-
-            fig = px.pie(
-                pie_data,
-                values='Revenue',
-                names='Maker',
-                color_discrete_sequence=colors,
-                hole=0.4
-            )
-            fig.update_traces(hovertemplate='%{label}<br>$%{value:,.0f}M (%{percent})<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.markdown("#### Key Statistics")
-
-            top_maker = maker_revenue.index[0] if len(maker_revenue) > 0 else "N/A"
-            top_maker_share = (maker_revenue.iloc[0] / total_revenue * 100) if total_revenue > 0 else 0
-            top_3_share = (maker_revenue.head(3).sum() / total_revenue * 100) if total_revenue > 0 else 0
-
-            st.markdown(f"""
-            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
-                <p style="color: #86868B; margin-bottom: 0.5rem;">Market Leader</p>
-                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{top_maker}</p>
-                <p style="color: #007AFF;">{top_maker_share:.1f}% market share</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown(f"""
-            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
-                <p style="color: #86868B; margin-bottom: 0.5rem;">Market Concentration</p>
-                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{top_3_share:.1f}%</p>
-                <p style="color: #86868B;">Top 3 makers share</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            hhi = sum((r/total_revenue*100)**2 for r in maker_revenue.values) if total_revenue > 0 else 0
-            concentration = "High" if hhi > 2500 else "Moderate" if hhi > 1500 else "Low"
-
-            st.markdown(f"""
-            <div style="background: #F5F5F7; border-radius: 12px; padding: 1.5rem;">
-                <p style="color: #86868B; margin-bottom: 0.5rem;">HHI Index</p>
-                <p style="font-size: 1.5rem; font-weight: 600; color: #1D1D1F;">{hhi:,.0f}</p>
-                <p style="color: #86868B;">{concentration} concentration</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Panel maker trends
-        st.divider()
-        st.markdown("#### Panel Maker Trends Over Time")
-
-        top_5_makers = maker_revenue.head(5).index.tolist()
-        maker_trends = maker_data[maker_data['panel_maker'].isin(top_5_makers)].copy()
-        maker_trends = maker_trends[~maker_trends['date'].str.contains('ALL', na=False)]
-        maker_trends['period'] = maker_trends['date'].str.split(' ').str[0]
-        maker_monthly = maker_trends.groupby(['period', 'panel_maker'])['revenue_m'].sum().reset_index()
-        maker_monthly = maker_monthly.sort_values('period')
-
-        if len(maker_monthly) > 0:
-            fig = px.line(
-                maker_monthly,
-                x='period',
-                y='revenue_m',
-                color='panel_maker',
-                color_discrete_sequence=colors,
-                markers=True
-            )
-            fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
-            apply_chart_theme(fig)
-            fig.update_layout(
-                xaxis_title="Quarter",
-                yaxis_title="Revenue ($M)",
-                height=400,
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    else:
-        st.info("No panel maker data available.")
-
-
-# Tab 5: Detailed Data
-with tab5:
     if len(shipments_df) > 0:
         st.markdown("#### Shipment Records")
 
