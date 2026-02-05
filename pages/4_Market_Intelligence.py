@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.styling import get_css, get_plotly_theme, apply_chart_theme, format_with_commas, format_percent
 from utils.database import DatabaseManager
 from utils.exports import create_download_buttons
+from product_inference import enrich_shipments
 
 # Page config
 st.set_page_config(
@@ -104,6 +105,7 @@ shipments_df = DatabaseManager.get_shipments(
     panel_maker=panel_maker,
     application=application
 )
+shipments_df = enrich_shipments(shipments_df)
 
 # Get theme colors
 theme = get_plotly_theme()
@@ -125,7 +127,7 @@ if len(shipments_df) > 0:
     ts_df['period'] = ts_df['date'].str.split(' ').str[0]
 
 # Main content tabs
-tab1, tab2, tab3, tab4 = st.tabs(["Market Overview", "Supplier Analysis", "Application Analysis", "Detailed Data"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Market Overview", "Supplier Analysis", "Application Analysis", "Product Analysis", "Detailed Data"])
 
 # =============================================================================
 # Tab 1: Market Overview
@@ -593,15 +595,195 @@ with tab3:
 
 
 # =============================================================================
-# Tab 4: Detailed Data
+# Tab 4: Product Analysis
 # =============================================================================
 with tab4:
+    if len(shipments_df) > 0:
+        # Filter to high/medium confidence only
+        product_df = shipments_df[
+            shipments_df['inference_confidence'].isin(['high', 'medium'])
+        ]
+
+        if len(product_df) > 0:
+            # --- Summary metrics row ---
+            col1, col2, col3, col4 = st.columns(4)
+
+            identified_count = product_df['inferred_product'].nunique()
+            product_revenue = product_df['revenue_m'].sum()
+            total_revenue_all = shipments_df['revenue_m'].sum()
+            revenue_coverage = (product_revenue / total_revenue_all * 100) if total_revenue_all > 0 else 0
+            high_conf_pct = (
+                (product_df['inference_confidence'] == 'high').sum() / len(product_df) * 100
+            ) if len(product_df) > 0 else 0
+
+            with col1:
+                st.metric("Identified Products", format_with_commas(identified_count))
+            with col2:
+                st.metric("Product Revenue", format_revenue_m(product_revenue))
+            with col3:
+                st.metric("Revenue Coverage", f"{revenue_coverage:.1f}%")
+            with col4:
+                st.metric("High Confidence", f"{high_conf_pct:.1f}%")
+
+            st.divider()
+
+            # --- Top Products Table (top 15) ---
+            st.markdown("#### Top Products")
+
+            product_agg = product_df.groupby(['inferred_product', 'brand']).agg({
+                'revenue_m': 'sum',
+                'units_k': 'sum'
+            }).reset_index().sort_values('revenue_m', ascending=False).head(15)
+
+            total_product_revenue = product_agg['revenue_m'].sum()
+            product_agg['Share %'] = (
+                product_agg['revenue_m'] / total_product_revenue * 100
+            ) if total_product_revenue > 0 else 0
+            product_agg['ASP ($)'] = (
+                product_agg['revenue_m'] * 1000 / product_agg['units_k']
+            ).where(product_agg['units_k'] > 0, 0)
+
+            product_table = product_agg.rename(columns={
+                'inferred_product': 'Product',
+                'brand': 'Brand',
+                'revenue_m': 'Revenue ($M)',
+                'units_k': 'Units (K)',
+            })
+
+            st.dataframe(
+                product_table,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Product": st.column_config.TextColumn("Product", width="medium"),
+                    "Brand": st.column_config.TextColumn("Brand", width="small"),
+                    "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                    "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                    "Share %": st.column_config.NumberColumn("Share %", format="%.1f%%"),
+                    "ASP ($)": st.column_config.NumberColumn("ASP ($)", format="$%,.0f"),
+                }
+            )
+
+            st.divider()
+
+            # --- Product Revenue Trends (top 8, quarterly) ---
+            st.markdown("#### Product Revenue Trends")
+
+            top_8_products = (
+                product_df.groupby('inferred_product')['revenue_m']
+                .sum().sort_values(ascending=False).head(8).index.tolist()
+            )
+
+            product_ts = product_df[
+                product_df['inferred_product'].isin(top_8_products) &
+                ~product_df['date'].str.contains('ALL', na=False)
+            ].copy()
+            product_ts['period'] = product_ts['date'].str.split(' ').str[0]
+
+            product_ts_agg = product_ts.groupby(
+                ['period', 'inferred_product']
+            )['revenue_m'].sum().reset_index().sort_values('period')
+
+            if len(product_ts_agg) > 0:
+                fig = px.line(
+                    product_ts_agg,
+                    x='period',
+                    y='revenue_m',
+                    color='inferred_product',
+                    color_discrete_sequence=colors,
+                    markers=True
+                )
+                fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+                apply_chart_theme(fig)
+                fig.update_layout(
+                    xaxis_title="Quarter",
+                    yaxis_title="Revenue ($M)",
+                    height=400,
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # --- Brand Drill-down ---
+            st.markdown("#### Brand Drill-down")
+
+            brand_list = (
+                product_df.groupby('brand')['revenue_m']
+                .sum().sort_values(ascending=False).index.tolist()
+            )
+            selected_brand = st.selectbox(
+                "Select a brand",
+                options=brand_list,
+                key="brand_drilldown"
+            )
+
+            if selected_brand:
+                brand_data = product_df[product_df['brand'] == selected_brand]
+                brand_product_agg = brand_data.groupby('inferred_product').agg({
+                    'revenue_m': 'sum',
+                    'units_k': 'sum'
+                }).reset_index().sort_values('revenue_m', ascending=False)
+
+                if len(brand_product_agg) > 0:
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        fig = px.bar(
+                            brand_product_agg,
+                            x='inferred_product',
+                            y='revenue_m',
+                            color='inferred_product',
+                            color_discrete_sequence=colors
+                        )
+                        fig.update_traces(hovertemplate='%{x}<br>$%{y:,.0f}M<extra></extra>')
+                        apply_chart_theme(fig)
+                        fig.update_layout(
+                            title=f"{selected_brand} — Revenue by Product",
+                            showlegend=False,
+                            xaxis_title="Product",
+                            yaxis_title="Revenue ($M)",
+                            height=400
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with col2:
+                        brand_display = brand_product_agg.copy()
+                        brand_display['ASP ($)'] = (
+                            brand_display['revenue_m'] * 1000 / brand_display['units_k']
+                        ).where(brand_display['units_k'] > 0, 0)
+                        brand_display.columns = ['Product', 'Revenue ($M)', 'Units (K)', 'ASP ($)']
+
+                        st.dataframe(
+                            brand_display,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Product": st.column_config.TextColumn("Product", width="medium"),
+                                "Revenue ($M)": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                                "Units (K)": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
+                                "ASP ($)": st.column_config.NumberColumn("ASP ($)", format="$%,.0f")
+                            }
+                        )
+                else:
+                    st.info(f"No product data for {selected_brand}.")
+        else:
+            st.info("No products identified with high or medium confidence for the selected filters.")
+    else:
+        st.info("No shipment data available for the selected filters.")
+
+
+# =============================================================================
+# Tab 5: Detailed Data
+# =============================================================================
+with tab5:
     if len(shipments_df) > 0:
         st.markdown("#### Shipment Records")
 
         display_cols = [
             'date', 'panel_maker', 'brand', 'model', 'size_inches',
-            'technology', 'application', 'units_k', 'revenue_m'
+            'technology', 'application', 'units_k', 'revenue_m',
+            'inferred_product', 'inference_confidence'
         ]
         available_cols = [c for c in display_cols if c in shipments_df.columns]
 
@@ -619,7 +801,9 @@ with tab4:
                 "technology": st.column_config.TextColumn("Tech", width="small"),
                 "application": st.column_config.TextColumn("Application", width="small"),
                 "units_k": st.column_config.NumberColumn("Units (K)", format="%,.0f"),
-                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f")
+                "revenue_m": st.column_config.NumberColumn("Revenue ($M)", format="$%,.0f"),
+                "inferred_product": st.column_config.TextColumn("Product", width="medium"),
+                "inference_confidence": st.column_config.TextColumn("Confidence", width="small")
             }
         )
 
