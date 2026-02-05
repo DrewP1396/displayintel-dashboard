@@ -421,42 +421,44 @@ if selected_factory != "All Factories":
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # Capacity and Input Chart - split by backplane
+            # Capacity and Input Chart - total factory snapshot
             st.markdown("### Monthly Capacity vs Actual Input")
+
+            # Aggregate across all backplanes for factory-level view
+            factory_totals = util_df.groupby('date').agg({
+                'capacity_ksheets': 'sum',
+                'actual_input_ksheets': 'sum'
+            }).reset_index()
+            factory_totals['utilization_pct'] = (
+                factory_totals['actual_input_ksheets'] / factory_totals['capacity_ksheets'] * 100
+            ).round(1)
 
             fig2 = go.Figure()
 
-            for i, bp in enumerate(backplanes_in_data):
-                bp_data = util_df[util_df['backplane'] == bp].groupby('date').agg({
-                    'capacity_ksheets': 'sum',
-                    'actual_input_ksheets': 'sum'
-                }).reset_index()
+            fig2.add_trace(go.Bar(
+                x=factory_totals['date'].tolist(),
+                y=factory_totals['capacity_ksheets'].tolist(),
+                name='Total Capacity',
+                marker_color=colors[0],
+                opacity=0.7,
+                hovertemplate='Capacity: %{y:,.1f}K/mo<extra></extra>'
+            ))
 
-                fig2.add_trace(go.Bar(
-                    x=bp_data['date'].tolist(),
-                    y=bp_data['capacity_ksheets'].tolist(),
-                    name=f'{bp} Capacity',
-                    marker_color=colors[i * 2 % len(colors)],
-                    opacity=0.7,
-                    hovertemplate=f'{bp} Capacity: %{{y:,.1f}}K/mo<extra></extra>'
-                ))
-
-                fig2.add_trace(go.Scatter(
-                    x=bp_data['date'].tolist(),
-                    y=bp_data['actual_input_ksheets'].tolist(),
-                    mode='lines+markers',
-                    name=f'{bp} Input',
-                    line=dict(color=colors[i * 2 + 1 % len(colors)], width=2),
-                    marker=dict(size=5),
-                    hovertemplate=f'{bp} Input: %{{y:,.1f}}K/mo<extra></extra>'
-                ))
+            fig2.add_trace(go.Scatter(
+                x=factory_totals['date'].tolist(),
+                y=factory_totals['actual_input_ksheets'].tolist(),
+                mode='lines+markers',
+                name='Actual Input',
+                line=dict(color=colors[1], width=2),
+                hovertemplate='Input: %{y:,.1f}K/mo<extra></extra>'
+            ))
 
             apply_chart_theme(fig2)
             fig2.update_layout(
                 xaxis_title="Date",
                 yaxis_title="K Sheets / Month",
-                height=400,
-                barmode='stack',
+                height=350,
+                barmode='overlay',
                 hovermode='x unified'
             )
 
