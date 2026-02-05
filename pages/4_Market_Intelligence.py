@@ -288,7 +288,7 @@ with tab2:
         # --- Supplier Revenue Trends (top 5) ---
         st.markdown("#### Supplier Revenue Trends")
 
-        top_5_suppliers = maker_agg.head(5)['Supplier'].tolist()
+        top_5_suppliers = maker_agg.head(5)['panel_maker'].tolist()
         maker_ts = ts_df[
             ts_df['panel_maker'].isin(top_5_suppliers)
         ].groupby(['period', 'panel_maker'])['revenue_m'].sum().reset_index().sort_values('period')
@@ -317,7 +317,7 @@ with tab2:
         # --- Market Concentration Card ---
         col1, col2, col3 = st.columns(3)
 
-        maker_revenue_series = maker_agg.set_index('Supplier')['Revenue ($M)']
+        maker_revenue_series = maker_agg.set_index('panel_maker')['revenue_m']
 
         with col1:
             top_maker = maker_revenue_series.index[0] if len(maker_revenue_series) > 0 else "N/A"
@@ -356,7 +356,7 @@ with tab2:
         # --- Supplier Drill-down ---
         st.markdown("#### Supplier Drill-down")
 
-        supplier_list = maker_agg['Supplier'].tolist()
+        supplier_list = maker_agg['panel_maker'].tolist()
         selected_supplier = st.selectbox(
             "Select a supplier",
             options=supplier_list,
