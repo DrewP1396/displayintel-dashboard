@@ -138,6 +138,12 @@ def extract_samsung_financials(pdf_path):
             if match:
                 results['year'] = int(match.group(1))
                 results['quarter'] = f"Q{match.group(2)}"
+            else:
+                # Handle CQ3'25 / CQ4'25 format
+                match = re.search(r"CQ(\d)['\u2019](\d{2})", filename)
+                if match:
+                    results['quarter'] = f"Q{match.group(1)}"
+                    results['year'] = 2000 + int(match.group(2))
 
         with pdfplumber.open(pdf_path) as pdf:
             full_text = ""
@@ -210,6 +216,12 @@ def extract_lgd_financials(pdf_path):
         if match:
             results['quarter'] = f"Q{match.group(1)}"
             results['year'] = int(match.group(2))
+        else:
+            # Handle CQ3'25 / CQ4'25 format
+            match = re.search(r"CQ(\d)['\u2019](\d{2})", filename)
+            if match:
+                results['quarter'] = f"Q{match.group(1)}"
+                results['year'] = 2000 + int(match.group(2))
 
         with pdfplumber.open(pdf_path) as pdf:
             full_text = ""
@@ -487,44 +499,73 @@ with tab1:
 # =============================================================================
 
 with tab2:
-    st.markdown("### PDF Extraction")
+    st.markdown("### Upload Earnings PDFs")
+    st.markdown("""
+    Upload Samsung or LG Display quarterly earnings PDFs.
+    Name files like `SDC CQ4'25 Earnings.pdf` or `LGD CQ3'25 Earnings.pdf`.
+    """)
 
-    pdf_files = scan_pdf_directory()
+    uploaded_files = st.file_uploader(
+        "Upload earnings PDFs",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="financial_pdf_upload"
+    )
 
-    if not PDF_DIR.exists() or not pdf_files:
-        st.info("""
-        **PDF Extraction is for local development.**
-
-        On Streamlit Cloud, use the **Manual Entry** tab to add financial data.
-
-        **For local use:**
-        1. Place PDF files in `~/displayintel/source_data/financials/`
-        2. Name files like `Samsung_Q4_2025.pdf` or `LGD_Q3_2025.pdf`
-        3. Return here and click "Extract Data from PDFs"
-        """)
-        st.caption(f"Looking in: `{PDF_DIR}`")
-    else:
-        st.markdown(f"**PDF Directory:** `{PDF_DIR}`")
-        st.success(f"Found {len(pdf_files)} PDF file(s)")
-        for pdf in pdf_files:
-            st.markdown(f"- `{pdf.name}`")
+    if uploaded_files:
+        st.success(f"**{len(uploaded_files)} file(s) uploaded**")
+        for f in uploaded_files:
+            st.markdown(f"- `{f.name}`")
 
         st.divider()
 
         if st.button("🔍 Extract Data from PDFs", type="primary"):
+            import tempfile
             results = []
             errors = []
             progress = st.progress(0)
             status = st.empty()
 
-            for i, pdf_path in enumerate(pdf_files):
-                status.markdown(f"Processing: `{pdf_path.name}`...")
-                progress.progress((i + 1) / len(pdf_files))
-                data, error = extract_financials_from_pdf(str(pdf_path))
+            for i, uploaded_file in enumerate(uploaded_files):
+                status.markdown(f"Processing: `{uploaded_file.name}`...")
+                progress.progress((i + 1) / len(uploaded_files))
+
+                # Write to temp file for pdfplumber
+                with tempfile.NamedTemporaryFile(suffix=".pdf", prefix=uploaded_file.name.rsplit(".", 1)[0] + "_", delete=False) as tmp:
+                    tmp.write(uploaded_file.read())
+                    tmp_path = tmp.name
+
+                # Use original filename for company detection and quarter parsing
+                original_name = uploaded_file.name
+                data, error = extract_financials_from_pdf(tmp_path)
+
+                # Re-parse filename from original name (temp file name may differ)
+                if data:
+                    data['source_file'] = original_name
+                    filename = original_name
+                    match = re.search(r'Q(\d)[\s_]*(\d{4})', filename, re.IGNORECASE)
+                    if match:
+                        data['quarter'] = f"Q{match.group(1)}"
+                        data['year'] = int(match.group(2))
+                    elif not data.get('year'):
+                        match = re.search(r"CQ(\d)['\u2019](\d{2})", filename)
+                        if match:
+                            data['quarter'] = f"Q{match.group(1)}"
+                            data['year'] = 2000 + int(match.group(2))
+
+                    # Detect company from original filename
+                    fn_lower = original_name.lower()
+                    if 'samsung' in fn_lower or 'sdc' in fn_lower:
+                        data['company'] = 'Samsung Display'
+                    elif 'lg' in fn_lower or 'lgd' in fn_lower:
+                        data['company'] = 'LG Display'
+
+                os.unlink(tmp_path)
+
                 if data and 'year' in data and 'quarter' in data:
                     results.append(data)
                 else:
-                    errors.append(f"{pdf_path.name}: {error or 'Missing year/quarter'}")
+                    errors.append(f"{original_name}: {error or 'Missing year/quarter'}")
 
             status.empty()
             progress.empty()
@@ -546,21 +587,25 @@ with tab2:
 
                 st.session_state['extracted_financials'] = results
 
-                if st.button("💾 Save to Database", type="primary"):
-                    saved, skipped = 0, 0
-                    for record in results:
-                        success, _ = save_financial_record(record)
-                        if success:
-                            saved += 1
-                        else:
-                            skipped += 1
-                    st.success(f"✅ {saved} records saved, {skipped} skipped")
-                    st.rerun()
-
             if errors:
                 st.warning("Some files had errors:")
                 for err in errors:
                     st.markdown(f"- {err}")
+
+    # Save button (outside the extract block so it persists)
+    if st.session_state.get('extracted_financials'):
+        st.divider()
+        if st.button("💾 Save to Database", type="primary"):
+            saved, skipped = 0, 0
+            for record in st.session_state['extracted_financials']:
+                success, _ = save_financial_record(record)
+                if success:
+                    saved += 1
+                else:
+                    skipped += 1
+            st.success(f"✅ {saved} records saved, {skipped} skipped")
+            del st.session_state['extracted_financials']
+            st.rerun()
 
 # =============================================================================
 # Tab 3: Manual Entry

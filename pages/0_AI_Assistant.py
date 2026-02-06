@@ -8,6 +8,7 @@ import pandas as pd
 from datetime import datetime, date
 import sqlite3
 import json
+import time
 import requests
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ DB_PATH = Path(__file__).parent.parent / "displayintel.db"
 # Constants
 # =============================================================================
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
 DAILY_LIMIT = 1500
 WARNING_THRESHOLD = 1400
 
@@ -200,7 +201,7 @@ def execute_sql_query(query: str) -> tuple:
 
 def call_gemini_api(prompt: str, api_key: str) -> tuple:
     """
-    Call Google Gemini API.
+    Call Google Gemini API with retry on 429 rate-limit errors.
 
     Returns:
         Tuple of (success: bool, response text or error)
@@ -227,23 +228,48 @@ def call_gemini_api(prompt: str, api_key: str) -> tuple:
         ]
     }
 
-    try:
-        response = requests.post(
-            f"{GEMINI_API_URL}?key={api_key}",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                f"{GEMINI_API_URL}?key={api_key}",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
 
-        if response.status_code == 200:
-            data = response.json()
-            text = data['candidates'][0]['content']['parts'][0]['text']
-            return True, text
-        else:
+            if response.status_code == 200:
+                data = response.json()
+                text = data['candidates'][0]['content']['parts'][0]['text']
+                return True, text
+
+            if response.status_code == 429 and attempt < max_attempts - 1:
+                # Parse retry delay from error response if available
+                wait_seconds = 15
+                try:
+                    err_data = response.json()
+                    details = err_data.get("error", {}).get("details", [])
+                    for detail in details:
+                        if "retryDelay" in detail:
+                            delay_str = detail["retryDelay"]
+                            # Parse e.g. "32s" or "32.5s"
+                            wait_seconds = int(float(delay_str.rstrip("s")))
+                            break
+                except (ValueError, KeyError, json.JSONDecodeError):
+                    pass
+                wait_seconds = min(wait_seconds, 60)
+                time.sleep(wait_seconds)
+                continue
+
+            if response.status_code == 429:
+                return False, "QUOTA_EXCEEDED"
+
             return False, f"API Error: {response.status_code} - {response.text[:200]}"
 
-    except Exception as e:
-        return False, f"Request failed: {str(e)}"
+        except Exception as e:
+            return False, f"Request failed: {str(e)}"
+
+    return False, "QUOTA_EXCEEDED"
 
 
 def process_user_question(question: str, api_key: str) -> dict:
@@ -285,7 +311,14 @@ Response:"""
     success, response = call_gemini_api(prompt, api_key)
 
     if not success:
-        result['response'] = f"Sorry, I encountered an error: {response}"
+        if response == "QUOTA_EXCEEDED":
+            result['response'] = (
+                "⚠️ The AI service is temporarily unavailable due to API rate limits. "
+                "Google's free-tier quota has been exceeded. Please wait a minute and try again, "
+                "or contact the administrator if this persists."
+            )
+        else:
+            result['response'] = f"Sorry, I encountered an error: {response}"
         return result
 
     # Parse response for SQL query
@@ -478,4 +511,4 @@ if st.session_state.messages:
 
 # Footer
 st.markdown("<br>", unsafe_allow_html=True)
-st.caption("Powered by Google Gemini 1.5 Flash • Free tier: 1,500 requests/day")
+st.caption("Powered by Google Gemini 2.5 Flash Lite • Free tier: 1,500 requests/day")
