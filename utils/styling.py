@@ -231,6 +231,11 @@ def get_css() -> str:
             border-right: 1px solid #E5E5E7;
         }
 
+        /* Capitalize sidebar nav page labels (fixes lowercase "dashboard") */
+        [data-testid="stSidebarNav"] a span {
+            text-transform: capitalize;
+        }
+
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1 {
             font-size: 1.5rem !important;
             padding: 1rem 0;
