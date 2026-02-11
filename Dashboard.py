@@ -6,8 +6,9 @@ Author: Display Intelligence
 """
 
 import re
+import secrets
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import sqlite3
 import bcrypt
@@ -59,33 +60,67 @@ def _auth_conn():
         conn.close()
 
 
+_SESSION_DAYS = 7
+
+
 def _init_auth_tables():
-    with _auth_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                hashed_password TEXT NOT NULL,
-                is_active INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
+    try:
+        with _auth_conn() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT UNIQUE NOT NULL,
+                    hashed_password TEXT NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            # Recreate sessions table with email column (replaces old user_id schema)
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            ]
+            if cols and "email" not in cols:
+                conn.execute("DROP TABLE IF EXISTS sessions")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token TEXT UNIQUE NOT NULL,
+                    email TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)"
             )
-        """)
+            # Clean up expired sessions
+            conn.execute(
+                "DELETE FROM sessions WHERE expires_at < ?",
+                (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+    except Exception as e:
+        st.error(f"Database error during initialization: {e}")
+        st.info("If this is a first run, the database file may not exist yet.")
 
 
 def _ensure_admin_exists():
-    with _auth_conn() as conn:
-        cnt = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
-    if cnt == 0:
-        try:
-            email = st.secrets["admin_email"]
-        except (KeyError, FileNotFoundError):
-            email = "admin@displayintel.com"
-        try:
-            pw = st.secrets["admin_password"]
-        except (KeyError, FileNotFoundError):
-            pw = "changeme2024!"
-        _create_user(email, pw)
+    try:
+        with _auth_conn() as conn:
+            cnt = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+        if cnt == 0:
+            try:
+                email = st.secrets["admin_email"]
+            except (KeyError, FileNotFoundError):
+                email = "admin@displayintel.com"
+            try:
+                pw = st.secrets["admin_password"]
+            except (KeyError, FileNotFoundError):
+                pw = "changeme2024!"
+            _create_user(email, pw)
+    except Exception as e:
+        st.error(f"Could not check/create admin user: {e}")
 
 
 def _create_user(email: str, password: str):
@@ -119,6 +154,53 @@ def _user_exists(email: str) -> bool:
     return cnt > 0
 
 
+def _create_session_token(email: str) -> str:
+    """Generate a session token, store in DB with 7-day expiry."""
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.utcnow() + timedelta(days=_SESSION_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    with _auth_conn() as conn:
+        conn.execute(
+            "INSERT INTO sessions (token, email, expires_at) VALUES (?, ?, ?)",
+            (token, email.lower().strip(), expires),
+        )
+    return token
+
+
+def _validate_session_token(token: str):
+    """Check token against DB. Returns email if valid, None otherwise."""
+    if not token:
+        return None
+    try:
+        with _auth_conn() as conn:
+            row = conn.execute(
+                "SELECT email, expires_at FROM sessions WHERE token = ?",
+                (token,),
+            ).fetchone()
+        if row is None:
+            return None
+        if datetime.utcnow() > datetime.strptime(
+            row["expires_at"], "%Y-%m-%d %H:%M:%S"
+        ):
+            _delete_session_token(token)
+            return None
+        return row["email"]
+    except Exception:
+        return None
+
+
+def _delete_session_token(token: str):
+    """Remove session from DB."""
+    if not token:
+        return
+    try:
+        with _auth_conn() as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    except Exception:
+        pass
+
+
 def _is_authenticated() -> bool:
     """Check if user is currently authenticated."""
     return st.session_state.get("password_correct", False)
@@ -144,6 +226,19 @@ def _login_page():
 
     if st.session_state.get("password_correct", False):
         return True
+
+    # ── Check "Remember me" token from URL ──────────────────────────────
+    token = st.query_params.get("t")
+    if token:
+        remembered_email = _validate_session_token(token)
+        if remembered_email:
+            st.session_state["password_correct"] = True
+            st.session_state["user_email"] = remembered_email
+            st.session_state["session_token"] = token
+            return True
+        else:
+            # Expired or invalid token — clear it
+            del st.query_params["t"]
 
     if "auth_mode" not in st.session_state:
         st.session_state["auth_mode"] = "signin"
@@ -341,6 +436,10 @@ def _login_page():
             if user:
                 st.session_state["password_correct"] = True
                 st.session_state["user_email"] = user["email"]
+                if st.session_state.get("auth_remember", False):
+                    token = _create_session_token(user["email"])
+                    st.session_state["session_token"] = token
+                    st.query_params["t"] = token
                 st.rerun()
             else:
                 st.error("Invalid email or password.")
@@ -425,8 +524,12 @@ def main():
         if user_email:
             st.caption(f"Signed in as {user_email}")
         if st.button("Logout", use_container_width=True):
+            token = st.session_state.pop("session_token", None)
+            if token:
+                _delete_session_token(token)
             st.session_state["password_correct"] = False
             st.session_state.pop("user_email", None)
+            st.query_params.clear()
             st.rerun()
 
     # Main content - Dashboard Overview
