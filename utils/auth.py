@@ -153,10 +153,11 @@ def cleanup_expired_sessions():
         )
 
 
-@st.cache_resource
 def get_cookie_manager():
-    """Return a singleton CookieManager instance."""
-    return stx.CookieManager()
+    """Return a singleton CookieManager instance via session_state (not cache)."""
+    if "cookie_manager" not in st.session_state:
+        st.session_state["cookie_manager"] = stx.CookieManager()
+    return st.session_state["cookie_manager"]
 
 
 def check_auth(cookie_manager):
