@@ -122,104 +122,203 @@ st.markdown(get_css(), unsafe_allow_html=True)
 
 
 def _login_page():
-    """Render a full-screen login page with Sign In / Sign Up tabs."""
+    """Render a modern, centered auth card with sign-in / sign-up toggle."""
 
     if st.session_state.get("password_correct", False):
         return True
 
-    # Hide sidebar, header chrome, and page nav while on login screen
+    if "auth_mode" not in st.session_state:
+        st.session_state["auth_mode"] = "signin"
+
+    is_signup = st.session_state["auth_mode"] == "signup"
+
+    # ── Full-page auth styling ──────────────────────────────────────────
     st.markdown("""
     <style>
+        /* Background */
+        .stApp { background-color: #f7f8fa !important; }
+
+        /* Hide ALL Streamlit chrome */
+        header[data-testid="stHeader"],
+        #MainMenu, footer,
         [data-testid="stSidebar"],
         [data-testid="stSidebarNav"],
-        [data-testid="collapsedControl"] {
-            display: none !important;
+        [data-testid="collapsedControl"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        .stDeployButton { display: none !important; }
+
+        /* Card = block-container */
+        section.main .block-container {
+            max-width: 400px !important;
+            margin: 10vh auto 0 auto !important;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+            padding: 2.5rem 2rem 2rem !important;
         }
-        .main .block-container {
-            max-width: 480px;
-            padding-top: 8vh;
+
+        /* System fonts */
+        section.main .block-container,
+        section.main .block-container p,
+        section.main .block-container span,
+        section.main .block-container input,
+        section.main .block-container button,
+        section.main .block-container label {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display',
+                         'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         }
+
+        /* Inputs */
+        [data-testid="stTextInput"] > div > div > input {
+            height: 48px !important;
+            border-radius: 8px !important;
+            border: 1px solid #e1e4e8 !important;
+            font-size: 15px !important;
+            padding: 0 14px !important;
+            background: #fff !important;
+            color: #111827 !important;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        [data-testid="stTextInput"] > div > div > input:focus {
+            border-color: #0066FF !important;
+            box-shadow: 0 0 0 3px rgba(0,102,255,0.08) !important;
+        }
+        [data-testid="stTextInput"] > div > div > input::placeholder {
+            color: #9ca3af !important;
+        }
+
+        /* Primary button */
+        [data-testid="stBaseButton-primary"] {
+            height: 48px !important;
+            border-radius: 8px !important;
+            background-color: #0066FF !important;
+            border: none !important;
+            font-size: 15px !important;
+            font-weight: 600 !important;
+            color: #fff !important;
+            transition: background-color 0.15s;
+            margin-top: 0.25rem !important;
+        }
+        [data-testid="stBaseButton-primary"]:hover {
+            background-color: #0052cc !important;
+        }
+
+        /* Toggle link (secondary button → plain text) */
+        [data-testid="stBaseButton-secondary"] {
+            background: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: #6b7280 !important;
+            font-size: 14px !important;
+            font-weight: 400 !important;
+            padding: 0.25rem !important;
+            height: auto !important;
+        }
+        [data-testid="stBaseButton-secondary"]:hover {
+            background: none !important;
+            color: #0066FF !important;
+            border: none !important;
+        }
+
+        /* Checkbox */
+        [data-testid="stCheckbox"] { margin-top: -0.25rem !important; }
+        [data-testid="stCheckbox"] label span {
+            font-size: 13px !important;
+            color: #6b7280 !important;
+        }
+
+        /* Vertical spacing */
+        section.main [data-testid="stVerticalBlock"] {
+            gap: 0.75rem !important;
+        }
+
+        /* Alerts */
+        .stAlert { border-radius: 8px !important; font-size: 14px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-    # Branding
+    # ── Branding ────────────────────────────────────────────────────────
     st.markdown("""
-        <div style="text-align: center; margin-bottom: 2.5rem;">
-            <div style="
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 72px; height: 72px;
-                background: linear-gradient(135deg, #007AFF 0%, #5856D6 100%);
-                border-radius: 18px;
-                margin-bottom: 1.25rem;
-            ">
-                <span style="font-size: 2rem; color: white; line-height: 1;">&#x1F4CA;</span>
+        <div style="text-align:center; margin-bottom:1.5rem;">
+            <div style="display:inline-flex; align-items:center; justify-content:center;
+                        width:56px; height:56px;
+                        background:linear-gradient(135deg,#0066FF,#5856D6);
+                        border-radius:14px; margin-bottom:0.75rem;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <rect x="3" y="12" width="4" height="9" rx="1" fill="white"/>
+                    <rect x="10" y="7" width="4" height="14" rx="1" fill="white" opacity=".85"/>
+                    <rect x="17" y="3" width="4" height="18" rx="1" fill="white"/>
+                </svg>
             </div>
-            <h1 style="font-size: 1.75rem; font-weight: 700; color: #1D1D1F; margin: 0 0 0.25rem;">
+            <h1 style="font-size:24px; font-weight:700; color:#111827;
+                       margin:0 0 2px; letter-spacing:-0.02em;">
                 Display Intelligence
             </h1>
-            <p style="color: #86868B; font-size: 0.95rem; margin: 0;">
+            <p style="font-size:14px; color:#9ca3af; margin:0;">
                 Industry Analytics Platform
             </p>
         </div>
     """, unsafe_allow_html=True)
 
-    # Card wrapper
-    st.markdown("""
-        <div style="
-            background: #FFFFFF;
-            border: 1px solid #E5E5E7;
-            border-radius: 16px;
-            padding: 2rem 1.75rem 1.5rem;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-        ">
-    """, unsafe_allow_html=True)
+    # ── Form fields ─────────────────────────────────────────────────────
+    email = st.text_input(
+        "Email", placeholder="name@company.com",
+        key="auth_email", label_visibility="collapsed",
+    )
+    password = st.text_input(
+        "Password", type="password", placeholder="Password",
+        key="auth_password", label_visibility="collapsed",
+    )
 
-    sign_in_tab, sign_up_tab = st.tabs(["Sign In", "Sign Up"])
-
-    with sign_in_tab:
-        email = st.text_input("Email", key="signin_email", placeholder="Email address")
-        password = st.text_input(
-            "Password", type="password", key="signin_password", placeholder="Password"
+    confirm_pw = ""
+    if is_signup:
+        confirm_pw = st.text_input(
+            "Confirm password", type="password", placeholder="Confirm password",
+            key="auth_confirm", label_visibility="collapsed",
         )
-        if st.button("Sign In", use_container_width=True, type="primary"):
+
+    if not is_signup:
+        st.checkbox("Remember me", value=False, key="auth_remember")
+
+    # ── Submit ──────────────────────────────────────────────────────────
+    btn_label = "Create Account" if is_signup else "Sign In"
+    if st.button(btn_label, use_container_width=True, type="primary"):
+        if is_signup:
+            if not email or not password:
+                st.error("Please fill in all fields.")
+            elif password != confirm_pw:
+                st.error("Passwords do not match.")
+            elif len(password) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif _user_exists(email):
+                st.error("An account with this email already exists.")
+            else:
+                try:
+                    _create_user(email, password)
+                    st.session_state["password_correct"] = True
+                    st.session_state["user_email"] = email.lower().strip()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not create account: {e}")
+        else:
             user = _verify_user(email, password)
             if user:
                 st.session_state["password_correct"] = True
                 st.session_state["user_email"] = user["email"]
                 st.rerun()
             else:
-                st.error("Incorrect email or password.")
+                st.error("Invalid email or password.")
 
-    with sign_up_tab:
-        new_email = st.text_input(
-            "Email", key="signup_email", placeholder="Email address"
-        )
-        new_password = st.text_input(
-            "Password", type="password", key="signup_password", placeholder="Password"
-        )
-        confirm_password = st.text_input(
-            "Confirm Password",
-            type="password",
-            key="signup_confirm",
-            placeholder="Confirm password",
-        )
-        if st.button("Sign Up", use_container_width=True, type="primary"):
-            if not new_email or not new_password:
-                st.error("Please fill in all fields.")
-            elif new_password != confirm_password:
-                st.error("Passwords do not match.")
-            elif _user_exists(new_email):
-                st.error("An account with this email already exists.")
-            else:
-                try:
-                    _create_user(new_email, new_password)
-                    st.success("Account created! Switch to **Sign In** to log in.")
-                except Exception as e:
-                    st.error(f"Error creating account: {e}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    # ── Mode toggle ─────────────────────────────────────────────────────
+    toggle_text = (
+        "Already have an account? Sign in"
+        if is_signup
+        else "Don't have an account? Create one"
+    )
+    if st.button(toggle_text, use_container_width=True, key="auth_toggle"):
+        st.session_state["auth_mode"] = "signin" if is_signup else "signup"
+        st.rerun()
 
     return False
 
