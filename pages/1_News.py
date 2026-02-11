@@ -26,7 +26,10 @@ st.set_page_config(
 # Apply styling
 st.markdown(get_css(), unsafe_allow_html=True)
 
-# Check authentication
+# Check authentication (restore session from cookie if available)
+from utils.auth import get_cookie_manager, check_auth
+cookie_manager = get_cookie_manager()
+check_auth(cookie_manager)
 if not st.session_state.get("password_correct", False):
     st.warning("Please login from the main page.")
     st.stop()

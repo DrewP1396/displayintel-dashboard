@@ -15,6 +15,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.styling import get_css
 from utils.database import DatabaseManager, format_integer, format_percent
+from utils.auth import (
+    init_auth_tables,
+    ensure_admin_exists,
+    get_cookie_manager,
+    check_auth,
+    login,
+    logout,
+)
 
 
 def _is_authenticated() -> bool:
@@ -37,8 +45,13 @@ st.set_page_config(
 st.markdown(get_css(), unsafe_allow_html=True)
 
 
-def _login_page():
-    """Render a full-screen, professional login page."""
+def _login_page(cookie_manager):
+    """Render a full-screen, professional login page with email/password auth."""
+
+    # Check cookie-based session first
+    check_auth(cookie_manager)
+    if st.session_state.get("password_correct", False):
+        return True
 
     # Hide sidebar, header chrome, and page nav while on login screen
     st.markdown("""
@@ -91,34 +104,30 @@ def _login_page():
                 Sign in
             </p>
             <p style="font-size: 0.8125rem; color: #86868B; margin: 0 0 1rem;">
-                Enter your team password to continue.
+                Enter your credentials to continue.
             </p>
     """, unsafe_allow_html=True)
 
-    def _on_submit():
-        try:
-            correct = st.secrets["password"]
-        except (KeyError, FileNotFoundError):
-            correct = "displayintel2024"
-
-        if st.session_state["_login_pw"] == correct:
-            st.session_state["password_correct"] = True
-        else:
-            st.session_state["password_correct"] = False
-        # Always clear the password from state
-        st.session_state["_login_pw"] = ""
-
-    st.text_input(
-        "Password",
-        type="password",
-        key="_login_pw",
-        on_change=_on_submit,
-        placeholder="Password",
-        label_visibility="collapsed",
+    email = st.text_input(
+        "Email",
+        key="login_email",
+        placeholder="Email address",
     )
 
-    if st.session_state.get("password_correct") is False:
-        st.error("Incorrect password. Please try again.")
+    password = st.text_input(
+        "Password",
+        type="password",
+        key="login_password",
+        placeholder="Password",
+    )
+
+    remember_me = st.checkbox("Remember me for 7 days", value=True)
+
+    if st.button("Sign In", use_container_width=True, type="primary"):
+        if login(email, password, remember_me, cookie_manager):
+            st.rerun()
+        else:
+            st.error("Incorrect email or password. Please try again.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -128,13 +137,21 @@ def _login_page():
         </p>
     """, unsafe_allow_html=True)
 
+    return False
+
 
 def main():
     """Main dashboard application."""
 
+    # Initialize auth system
+    init_auth_tables()
+    ensure_admin_exists()
+
+    # Cookie manager (one instance per session)
+    cookie_manager = get_cookie_manager()
+
     # Gate: show login page until authenticated
-    if not _is_authenticated():
-        _login_page()
+    if not _login_page(cookie_manager):
         return
 
     # Sidebar
@@ -176,10 +193,13 @@ def main():
         st.markdown("### Data Status")
         st.caption(f"Last updated: {datetime.now().strftime('%B %d, %Y')}")
 
-        # Logout button
+        # User info and logout
         st.divider()
+        user_email = st.session_state.get("user_email", "")
+        if user_email:
+            st.caption(f"Signed in as {user_email}")
         if st.button("Logout", use_container_width=True):
-            st.session_state["password_correct"] = False
+            logout(cookie_manager)
             st.rerun()
 
     # Main content - Dashboard Overview
