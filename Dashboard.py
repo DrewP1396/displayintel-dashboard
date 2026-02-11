@@ -8,21 +8,97 @@ Author: Display Intelligence
 import streamlit as st
 from datetime import datetime
 import sys
+import sqlite3
+import bcrypt
 from pathlib import Path
+from contextlib import contextmanager
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.styling import get_css
 from utils.database import DatabaseManager, format_integer, format_percent
-from utils.auth import (
-    init_auth_tables,
-    ensure_admin_exists,
-    get_cookie_manager,
-    check_auth,
-    login,
-    logout,
-)
+
+# ---------------------------------------------------------------------------
+# Auth helpers (inline – avoids import issues on Streamlit Cloud)
+# ---------------------------------------------------------------------------
+
+_AUTH_DB = Path(__file__).parent / "displayintel.db"
+
+
+@contextmanager
+def _auth_conn():
+    conn = sqlite3.connect(_AUTH_DB, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _init_auth_tables():
+    with _auth_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                hashed_password TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+
+def _ensure_admin_exists():
+    with _auth_conn() as conn:
+        cnt = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+    if cnt == 0:
+        try:
+            email = st.secrets["admin_email"]
+        except (KeyError, FileNotFoundError):
+            email = "admin@displayintel.com"
+        try:
+            pw = st.secrets["admin_password"]
+        except (KeyError, FileNotFoundError):
+            pw = "changeme2024!"
+        _create_user(email, pw)
+
+
+def _create_user(email: str, password: str):
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    with _auth_conn() as conn:
+        conn.execute(
+            "INSERT INTO users (email, hashed_password) VALUES (?, ?)",
+            (email.lower().strip(), hashed),
+        )
+
+
+def _verify_user(email: str, password: str):
+    with _auth_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, hashed_password, is_active FROM users WHERE email = ?",
+            (email.lower().strip(),),
+        ).fetchone()
+    if row is None or not row["is_active"]:
+        return None
+    if bcrypt.checkpw(password.encode(), row["hashed_password"].encode()):
+        return {"id": row["id"], "email": row["email"]}
+    return None
+
+
+def _user_exists(email: str) -> bool:
+    with _auth_conn() as conn:
+        cnt = conn.execute(
+            "SELECT COUNT(*) as c FROM users WHERE email = ?",
+            (email.lower().strip(),),
+        ).fetchone()["c"]
+    return cnt > 0
 
 
 def _is_authenticated() -> bool:
@@ -45,11 +121,9 @@ st.set_page_config(
 st.markdown(get_css(), unsafe_allow_html=True)
 
 
-def _login_page(cookie_manager):
-    """Render a full-screen, professional login page with email/password auth."""
+def _login_page():
+    """Render a full-screen login page with Sign In / Sign Up tabs."""
 
-    # Check cookie-based session first
-    check_auth(cookie_manager)
     if st.session_state.get("password_correct", False):
         return True
 
@@ -91,7 +165,7 @@ def _login_page(cookie_manager):
         </div>
     """, unsafe_allow_html=True)
 
-    # Login card
+    # Card wrapper
     st.markdown("""
         <div style="
             background: #FFFFFF;
@@ -100,42 +174,52 @@ def _login_page(cookie_manager):
             padding: 2rem 1.75rem 1.5rem;
             box-shadow: 0 2px 12px rgba(0,0,0,0.06);
         ">
-            <p style="font-size: 0.95rem; font-weight: 600; color: #1D1D1F; margin: 0 0 0.25rem;">
-                Sign in
-            </p>
-            <p style="font-size: 0.8125rem; color: #86868B; margin: 0 0 1rem;">
-                Enter your credentials to continue.
-            </p>
     """, unsafe_allow_html=True)
 
-    email = st.text_input(
-        "Email",
-        key="login_email",
-        placeholder="Email address",
-    )
+    sign_in_tab, sign_up_tab = st.tabs(["Sign In", "Sign Up"])
 
-    password = st.text_input(
-        "Password",
-        type="password",
-        key="login_password",
-        placeholder="Password",
-    )
+    with sign_in_tab:
+        email = st.text_input("Email", key="signin_email", placeholder="Email address")
+        password = st.text_input(
+            "Password", type="password", key="signin_password", placeholder="Password"
+        )
+        if st.button("Sign In", use_container_width=True, type="primary"):
+            user = _verify_user(email, password)
+            if user:
+                st.session_state["password_correct"] = True
+                st.session_state["user_email"] = user["email"]
+                st.rerun()
+            else:
+                st.error("Incorrect email or password.")
 
-    remember_me = st.checkbox("Remember me for 7 days", value=True)
-
-    if st.button("Sign In", use_container_width=True, type="primary"):
-        if login(email, password, remember_me, cookie_manager):
-            st.rerun()
-        else:
-            st.error("Incorrect email or password. Please try again.")
+    with sign_up_tab:
+        new_email = st.text_input(
+            "Email", key="signup_email", placeholder="Email address"
+        )
+        new_password = st.text_input(
+            "Password", type="password", key="signup_password", placeholder="Password"
+        )
+        confirm_password = st.text_input(
+            "Confirm Password",
+            type="password",
+            key="signup_confirm",
+            placeholder="Confirm password",
+        )
+        if st.button("Sign Up", use_container_width=True, type="primary"):
+            if not new_email or not new_password:
+                st.error("Please fill in all fields.")
+            elif new_password != confirm_password:
+                st.error("Passwords do not match.")
+            elif _user_exists(new_email):
+                st.error("An account with this email already exists.")
+            else:
+                try:
+                    _create_user(new_email, new_password)
+                    st.success("Account created! Switch to **Sign In** to log in.")
+                except Exception as e:
+                    st.error(f"Error creating account: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("""
-        <p style="text-align: center; color: #86868B; font-size: 0.75rem; margin-top: 1.5rem;">
-            Contact your administrator for access credentials.
-        </p>
-    """, unsafe_allow_html=True)
 
     return False
 
@@ -144,14 +228,11 @@ def main():
     """Main dashboard application."""
 
     # Initialize auth system
-    init_auth_tables()
-    ensure_admin_exists()
-
-    # Cookie manager (one instance per session)
-    cookie_manager = get_cookie_manager()
+    _init_auth_tables()
+    _ensure_admin_exists()
 
     # Gate: show login page until authenticated
-    if not _login_page(cookie_manager):
+    if not _login_page():
         return
 
     # Sidebar
@@ -199,7 +280,8 @@ def main():
         if user_email:
             st.caption(f"Signed in as {user_email}")
         if st.button("Logout", use_container_width=True):
-            logout(cookie_manager)
+            st.session_state["password_correct"] = False
+            st.session_state.pop("user_email", None)
             st.rerun()
 
     # Main content - Dashboard Overview
