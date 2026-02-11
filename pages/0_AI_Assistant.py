@@ -40,6 +40,7 @@ DB_PATH = Path(__file__).parent.parent / "displayintel.db"
 # =============================================================================
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 DAILY_LIMIT = 1500
 WARNING_THRESHOLD = 1400
 
@@ -97,6 +98,14 @@ def get_api_key():
     """Get Gemini API key from Streamlit secrets."""
     try:
         return st.secrets.get("gemini_api_key", None)
+    except:
+        return None
+
+
+def get_claude_api_key():
+    """Get Anthropic API key from Streamlit secrets."""
+    try:
+        return st.secrets.get("anthropic_api_key", None)
     except:
         return None
 
@@ -204,6 +213,7 @@ def call_gemini_api(prompt: str, api_key: str) -> tuple:
 
     Returns:
         Tuple of (success: bool, response text or error)
+        For quota errors, returns (False, "QUOTA_EXCEEDED")
     """
     headers = {
         "Content-Type": "application/json"
@@ -239,11 +249,50 @@ def call_gemini_api(prompt: str, api_key: str) -> tuple:
             data = response.json()
             text = data['candidates'][0]['content']['parts'][0]['text']
             return True, text
+        elif response.status_code == 429:
+            return False, "QUOTA_EXCEEDED"
         else:
             return False, f"API Error: {response.status_code} - {response.text[:200]}"
 
     except Exception as e:
         return False, f"Request failed: {str(e)}"
+
+
+def call_claude_api(prompt: str, api_key: str) -> tuple:
+    """
+    Call Anthropic Claude API as fallback.
+
+    Returns:
+        Tuple of (success: bool, response text or error)
+    """
+    try:
+        response = requests.post(
+            CLAUDE_API_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-3-5-20241022",
+                "max_tokens": 2048,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt
+                }]
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            text = data['content'][0]['text']
+            return True, text
+        else:
+            return False, f"Claude API Error: {response.status_code} - {response.text[:200]}"
+
+    except Exception as e:
+        return False, f"Claude request failed: {str(e)}"
 
 
 def process_user_question(question: str, api_key: str) -> dict:
@@ -283,6 +332,21 @@ Response:"""
 
     # Call Gemini
     success, response = call_gemini_api(prompt, api_key)
+
+    # If Gemini quota exceeded, try Claude as fallback
+    if not success and response == "QUOTA_EXCEEDED":
+        claude_key = get_claude_api_key()
+        if claude_key:
+            result['fallback'] = True
+            success, response = call_claude_api(prompt, claude_key)
+        else:
+            result['response'] = (
+                "The AI Assistant has reached its API quota limit. "
+                "This typically resets daily. Please try again later, "
+                "or contact the administrator to check the Gemini API billing plan."
+            )
+            result['quota_exceeded'] = True
+            return result
 
     if not success:
         result['response'] = f"Sorry, I encountered an error: {response}"
@@ -413,7 +477,12 @@ if "pending_question" in st.session_state:
                 increment_usage()
                 result = process_user_question(question, api_key)
 
-            st.markdown(result['response'])
+            if result.get('quota_exceeded'):
+                st.warning(result['response'])
+            else:
+                if result.get('fallback'):
+                    st.info("Gemini quota exceeded — responded using Claude AI as fallback.")
+                st.markdown(result['response'])
 
             if result['data'] is not None:
                 st.dataframe(result['data'], use_container_width=True)
@@ -450,7 +519,12 @@ if prompt := st.chat_input("Ask about display industry data..."):
                 increment_usage()
                 result = process_user_question(prompt, api_key)
 
-            st.markdown(result['response'])
+            if result.get('quota_exceeded'):
+                st.warning(result['response'])
+            else:
+                if result.get('fallback'):
+                    st.info("Gemini quota exceeded — responded using Claude AI as fallback.")
+                st.markdown(result['response'])
 
             if result['data'] is not None:
                 st.dataframe(result['data'], use_container_width=True)
@@ -478,4 +552,4 @@ if st.session_state.messages:
 
 # Footer
 st.markdown("<br>", unsafe_allow_html=True)
-st.caption("Powered by Google Gemini 1.5 Flash • Free tier: 1,500 requests/day")
+st.caption("Powered by Google Gemini 1.5 Flash • Fallback: Claude AI • Free tier: 1,500 requests/day")
