@@ -25,7 +25,7 @@ from utils.database import DatabaseManager, format_integer, format_percent
 # Auth helpers (inline – avoids import issues on Streamlit Cloud)
 # ---------------------------------------------------------------------------
 
-_AUTH_DB = Path(__file__).parent / "displayintel.db"
+_AUTH_DB = Path(__file__).parent / "auth.db"
 
 ALLOWED_EMAILS = [
     "andrew@displayintel.com",
@@ -45,6 +45,37 @@ def _validate_password(password: str) -> list[str]:
     return errors
 
 
+_SESSION_DAYS = 7
+_DEFAULT_ADMIN_EMAIL = "admin@displayintel.com"
+_DEFAULT_ADMIN_PW = "Admin123!"
+
+
+def _db_is_valid() -> bool:
+    """Return True if auth.db exists and passes an integrity check."""
+    if not _AUTH_DB.exists():
+        return False
+    try:
+        conn = sqlite3.connect(_AUTH_DB, check_same_thread=False)
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        conn.close()
+        return result == "ok"
+    except Exception:
+        return False
+
+
+def _recreate_auth_db():
+    """Delete corrupted DB (keeping a backup) and create a fresh one."""
+    if _AUTH_DB.exists():
+        backup = _AUTH_DB.with_suffix(".db.backup")
+        try:
+            _AUTH_DB.rename(backup)
+        except Exception:
+            _AUTH_DB.unlink(missing_ok=True)
+        # Also remove WAL / SHM sidecar files
+        _AUTH_DB.with_suffix(".db-wal").unlink(missing_ok=True)
+        _AUTH_DB.with_suffix(".db-shm").unlink(missing_ok=True)
+
+
 @contextmanager
 def _auth_conn():
     conn = sqlite3.connect(_AUTH_DB, check_same_thread=False)
@@ -60,10 +91,11 @@ def _auth_conn():
         conn.close()
 
 
-_SESSION_DAYS = 7
-
-
 def _init_auth_tables():
+    """Ensure auth.db is healthy and tables exist. Recreates DB if corrupted."""
+    if not _db_is_valid():
+        _recreate_auth_db()
+
     try:
         with _auth_conn() as conn:
             conn.execute("""
@@ -73,16 +105,9 @@ def _init_auth_tables():
                     hashed_password TEXT NOT NULL,
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
+                    last_login TEXT
                 )
             """)
-            # Recreate sessions table with email column (replaces old user_id schema)
-            cols = [
-                r[1]
-                for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
-            ]
-            if cols and "email" not in cols:
-                conn.execute("DROP TABLE IF EXISTS sessions")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,17 +120,17 @@ def _init_auth_tables():
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)"
             )
-            # Clean up expired sessions
+            # Clean expired sessions
             conn.execute(
                 "DELETE FROM sessions WHERE expires_at < ?",
                 (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),),
             )
     except Exception as e:
         st.error(f"Database error during initialization: {e}")
-        st.info("If this is a first run, the database file may not exist yet.")
 
 
 def _ensure_admin_exists():
+    """Create default admin user if the users table is empty."""
     try:
         with _auth_conn() as conn:
             cnt = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
@@ -113,11 +138,11 @@ def _ensure_admin_exists():
             try:
                 email = st.secrets["admin_email"]
             except (KeyError, FileNotFoundError):
-                email = "admin@displayintel.com"
+                email = _DEFAULT_ADMIN_EMAIL
             try:
                 pw = st.secrets["admin_password"]
             except (KeyError, FileNotFoundError):
-                pw = "changeme2024!"
+                pw = _DEFAULT_ADMIN_PW
             _create_user(email, pw)
     except Exception as e:
         st.error(f"Could not check/create admin user: {e}")
