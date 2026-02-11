@@ -440,8 +440,9 @@ def _login_page():
         if is_signup:
             if not email or not password:
                 st.error("Please fill in all fields.")
-            elif email.lower().strip() not in [e.lower() for e in ALLOWED_EMAILS]:
-                st.error("Email not authorized. Contact admin for access.")
+            # TODO: Re-enable whitelist before production
+            # elif email.lower().strip() not in [e.lower() for e in ALLOWED_EMAILS]:
+            #     st.error("Email not authorized. Contact admin for access.")
             elif _validate_password(password):
                 st.error("Password does not meet requirements.")
             elif password != confirm_pw:
