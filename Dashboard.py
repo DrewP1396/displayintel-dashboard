@@ -5,6 +5,7 @@ A professional analytics platform for display industry intelligence.
 Author: Display Intelligence
 """
 
+import re
 import streamlit as st
 from datetime import datetime
 import sys
@@ -24,6 +25,23 @@ from utils.database import DatabaseManager, format_integer, format_percent
 # ---------------------------------------------------------------------------
 
 _AUTH_DB = Path(__file__).parent / "displayintel.db"
+
+ALLOWED_EMAILS = [
+    "andrew@displayintel.com",
+    "admin@displayintel.com",
+]
+
+
+def _validate_password(password: str) -> list[str]:
+    """Return list of unmet password requirements (empty = valid)."""
+    errors = []
+    if len(password) < 8:
+        errors.append("At least 8 characters")
+    if not re.search(r"[A-Z]", password):
+        errors.append("At least 1 uppercase letter")
+    if not re.search(r"[0-9]", password):
+        errors.append("At least 1 number")
+    return errors
 
 
 @contextmanager
@@ -181,7 +199,7 @@ def _login_page():
             transition: border-color 0.15s, box-shadow 0.15s;
         }
         [data-testid="stTextInput"] > div > div > input:focus {
-            border-color: #0066FF !important;
+            border-color: #007AFF !important;
             box-shadow: 0 0 0 3px rgba(0,102,255,0.08) !important;
         }
         [data-testid="stTextInput"] > div > div > input::placeholder {
@@ -192,7 +210,7 @@ def _login_page():
         [data-testid="stBaseButton-primary"] {
             height: 48px !important;
             border-radius: 8px !important;
-            background-color: #0066FF !important;
+            background-color: #007AFF !important;
             border: none !important;
             font-size: 15px !important;
             font-weight: 600 !important;
@@ -201,7 +219,7 @@ def _login_page():
             margin-top: 0.25rem !important;
         }
         [data-testid="stBaseButton-primary"]:hover {
-            background-color: #0052cc !important;
+            background-color: #0062cc !important;
         }
 
         /* Toggle link (secondary button → plain text) */
@@ -217,7 +235,7 @@ def _login_page():
         }
         [data-testid="stBaseButton-secondary"]:hover {
             background: none !important;
-            color: #0066FF !important;
+            color: #007AFF !important;
             border: none !important;
         }
 
@@ -243,7 +261,7 @@ def _login_page():
         <div style="text-align:center; margin-bottom:1.5rem;">
             <div style="display:inline-flex; align-items:center; justify-content:center;
                         width:56px; height:56px;
-                        background:linear-gradient(135deg,#0066FF,#5856D6);
+                        background:linear-gradient(135deg,#007AFF,#5856D6);
                         border-radius:14px; margin-bottom:0.75rem;">
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
                     <rect x="3" y="12" width="4" height="9" rx="1" fill="white"/>
@@ -273,6 +291,21 @@ def _login_page():
 
     confirm_pw = ""
     if is_signup:
+        # Password requirements hint
+        pw_errors = _validate_password(password) if password else [
+            "At least 8 characters", "At least 1 uppercase letter", "At least 1 number",
+        ]
+        req_html = "".join(
+            f'<span style="color:{("#34C759" if password and r not in pw_errors else "#9ca3af")}; '
+            f'font-size:12px; display:block; margin-bottom:2px;">'
+            f'{"&#10003;" if password and r not in pw_errors else "&#8226;"} {r}</span>'
+            for r in ["At least 8 characters", "At least 1 uppercase letter", "At least 1 number"]
+        )
+        st.markdown(
+            f'<div style="margin:-0.25rem 0 0.5rem 2px;">{req_html}</div>',
+            unsafe_allow_html=True,
+        )
+
         confirm_pw = st.text_input(
             "Confirm password", type="password", placeholder="Confirm password",
             key="auth_confirm", label_visibility="collapsed",
@@ -287,10 +320,12 @@ def _login_page():
         if is_signup:
             if not email or not password:
                 st.error("Please fill in all fields.")
+            elif email.lower().strip() not in [e.lower() for e in ALLOWED_EMAILS]:
+                st.error("Email not authorized. Contact admin for access.")
+            elif _validate_password(password):
+                st.error("Password does not meet requirements.")
             elif password != confirm_pw:
                 st.error("Passwords do not match.")
-            elif len(password) < 8:
-                st.error("Password must be at least 8 characters.")
             elif _user_exists(email):
                 st.error("An account with this email already exists.")
             else:
@@ -309,6 +344,17 @@ def _login_page():
                 st.rerun()
             else:
                 st.error("Invalid email or password.")
+
+    # ── Forgot password (sign-in only) ──────────────────────────────────
+    if not is_signup:
+        if "show_forgot" not in st.session_state:
+            st.session_state["show_forgot"] = False
+
+        if st.button("Forgot password?", use_container_width=True, key="auth_forgot"):
+            st.session_state["show_forgot"] = not st.session_state["show_forgot"]
+
+        if st.session_state.get("show_forgot"):
+            st.info("Contact **admin@displayintel.com** to reset your password.")
 
     # ── Mode toggle ─────────────────────────────────────────────────────
     toggle_text = (
