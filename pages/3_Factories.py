@@ -535,7 +535,7 @@ else:
     # =============================================================================
 
     # Main content tabs
-    tab1, tab2, tab3 = st.tabs(["Factory Database", "Utilization Analysis", "Capacity Overview"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Factory Database", "Utilization Analysis", "Capacity Overview", "Factory Comparison"])
 
     # Tab 1: Factory Database
     with tab1:
@@ -955,4 +955,314 @@ else:
 
         else:
             st.info("No capacity data available for the selected date range.")
+
+    # Tab 4: Factory Comparison
+    with tab4:
+        # Depreciation rules by region
+        DEPRECIATION_YEARS = {
+            "S Korea": 5, "China": 7, "Taiwan": 7, "Japan": 5,
+            "Singapore": 5, "India": 7,
+        }
+
+        def _format_mp_ramp(val):
+            """Format MP ramp date for display."""
+            if not val or pd.isna(val):
+                return "-"
+            s = str(val).strip()
+            if s.lower().startswith("before"):
+                return "2014 or earlier"
+            try:
+                dt = pd.to_datetime(s)
+                q = (dt.month - 1) // 3 + 1
+                return f"Q{q} {dt.year}"
+            except Exception:
+                return s[:10]
+
+        # Build factory options list
+        all_factories = DatabaseManager.get_factories()
+        if len(all_factories) == 0:
+            st.info("No factory data available.")
+            st.stop()
+
+        # Group by manufacturer + factory_name for display
+        factory_groups = (
+            all_factories
+            .groupby(["manufacturer", "factory_name"])
+            .first()
+            .reset_index()
+        )
+        factory_groups["label"] = factory_groups.apply(
+            lambda r: f"{r['manufacturer']} - {r['factory_name']} ({r.get('location') or r.get('region', '')})",
+            axis=1,
+        )
+        label_to_name = dict(zip(factory_groups["label"], factory_groups["factory_name"]))
+
+        st.markdown("#### Select Factories to Compare")
+        st.caption("Choose 2-4 factories for side-by-side comparison.")
+
+        selected_labels = st.multiselect(
+            "Factories",
+            options=sorted(factory_groups["label"].tolist(), key=natural_sort_key),
+            max_selections=4,
+            key="compare_factories",
+            label_visibility="collapsed",
+        )
+
+        if len(selected_labels) < 2:
+            st.info("Select at least 2 factories above to begin comparing.")
+        else:
+            # ── Gather data for each selected factory ──
+            compare_data = []
+            for label in selected_labels:
+                fname = label_to_name[label]
+                fdf = DatabaseManager.get_factory_by_name(fname)
+                if fdf is None or len(fdf) == 0:
+                    continue
+
+                info = fdf.iloc[0]
+                backplanes = fdf["backplane"].dropna().unique().tolist()
+                region = info.get("region", "-") or "-"
+
+                # Latest utilization
+                util = DatabaseManager.get_utilization(factory_name=fname)
+                latest_cap, latest_input, latest_util = 0.0, 0.0, 0.0
+                if len(util) > 0:
+                    util_actual = util[util["actual_input_ksheets"] > 0]
+                    if len(util_actual) > 0:
+                        ld = util_actual["date"].max()
+                    else:
+                        ld = util["date"].max()
+                    latest = util[util["date"] == ld]
+                    latest_cap = latest["capacity_ksheets"].sum()
+                    latest_input = latest["actual_input_ksheets"].sum()
+                    latest_util = (latest_input / latest_cap * 100) if latest_cap > 0 else 0
+
+                # Equipment orders
+                factory_ids = fdf["factory_id"].tolist()
+                equip_dfs = [DatabaseManager.get_equipment_orders_for_factory(fid) for fid in factory_ids]
+                equip = pd.concat(equip_dfs, ignore_index=True) if equip_dfs else pd.DataFrame()
+                # Deduplicate by all columns (same order can match multiple factory_id patterns)
+                if len(equip) > 0:
+                    equip = equip.drop_duplicates()
+                total_investment = equip["amount_usd"].sum() if len(equip) > 0 and "amount_usd" in equip.columns else 0
+
+                # MP ramp dates per backplane
+                ramp_by_bp = {}
+                for _, row in fdf.iterrows():
+                    bp = row.get("backplane", "Unknown")
+                    mp = row.get("mp_ramp_date")
+                    if mp and bp:
+                        ramp_by_bp[bp] = _format_mp_ramp(mp)
+
+                earliest_ramp = "-"
+                for _, row in fdf.iterrows():
+                    mp = row.get("mp_ramp_date")
+                    if mp and str(mp).strip().lower().startswith("before"):
+                        earliest_ramp = "2014 or earlier"
+                        break
+                    try:
+                        dt = pd.to_datetime(mp)
+                        if earliest_ramp == "-" or dt < pd.to_datetime(earliest_ramp.replace("Q", "").replace(" ", "-01-")):
+                            earliest_ramp = _format_mp_ramp(mp)
+                    except Exception:
+                        pass
+
+                dep_years = DEPRECIATION_YEARS.get(region, 5)
+
+                compare_data.append({
+                    "label": label,
+                    "factory_name": fname,
+                    "manufacturer": info.get("manufacturer", "-"),
+                    "location": info.get("location", "-") or "-",
+                    "region": region,
+                    "technology": info.get("technology", "-") or "-",
+                    "backplanes": backplanes,
+                    "generation": info.get("generation", "-") or "-",
+                    "application": info.get("application_category", "-") or "-",
+                    "status": (info.get("status", "-") or "-").title(),
+                    "probability": info.get("probability", "-") or "-",
+                    "substrate": info.get("substrate", "-") or "-",
+                    "capacity": latest_cap,
+                    "input": latest_input,
+                    "utilization": latest_util,
+                    "total_investment": total_investment,
+                    "ramp_by_bp": ramp_by_bp,
+                    "earliest_ramp": earliest_ramp,
+                    "dep_years": dep_years,
+                    "factory_df": fdf,
+                    "util_df": util,
+                    "equip_df": equip,
+                })
+
+            if len(compare_data) < 2:
+                st.warning("Could not load data for enough factories.")
+            else:
+                # ── Comparison Cards ──
+                n = len(compare_data)
+                cols = st.columns(n)
+
+                for i, d in enumerate(compare_data):
+                    with cols[i]:
+                        tech = d["technology"]
+                        tech_color = "#007AFF" if tech == "OLED" else "#34C759"
+
+                        st.markdown(f"""
+                        <div style="background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:16px 18px 12px;margin-bottom:8px;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                                <span style="font-size:1.15rem;font-weight:700;">{d['manufacturer']} {d['factory_name']}</span>
+                                <span style="background:{tech_color};color:#fff;padding:1px 7px;border-radius:4px;font-size:0.7rem;font-weight:600;">{tech}</span>
+                            </div>
+                            <div style="color:#86868B;font-size:0.82rem;margin-bottom:10px;">{d['location']}, {d['region']} &nbsp;|&nbsp; {d['generation']} &nbsp;|&nbsp; {d['application']}</div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:0.85rem;">
+                                <div><span style="color:#86868B;">Capacity</span><br><b>{d['capacity']:,.1f}</b> K/mo</div>
+                                <div><span style="color:#86868B;">Utilization</span><br><b>{d['utilization']:.1f}%</b></div>
+                                <div><span style="color:#86868B;">Backplane</span><br><b>{', '.join(d['backplanes']) or '-'}</b></div>
+                                <div><span style="color:#86868B;">Substrate</span><br><b>{d['substrate']}</b></div>
+                                <div><span style="color:#86868B;">First Ramp</span><br><b>{d['earliest_ramp']}</b></div>
+                                <div><span style="color:#86868B;">Status</span><br><b>{d['status']}</b> ({d['probability']})</div>
+                            </div>
+                            <div style="border-top:1px solid #E5E5EA;margin-top:10px;padding-top:8px;display:flex;justify-content:space-between;font-size:0.82rem;">
+                                <span><span style="color:#86868B;">Depreciation:</span> <b>{d['dep_years']}yr</b> ({d['region']})</span>
+                                <span><span style="color:#86868B;">Invest:</span> <b>{'${:,.0f}M'.format(d['total_investment']/1e6) if d['total_investment'] > 0 else '-'}</b></span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                # ── Investment Timeline (expandable per factory) ──
+                st.divider()
+                st.markdown("#### Investment Timeline")
+
+                timeline_cols = st.columns(n)
+                for i, d in enumerate(compare_data):
+                    with timeline_cols[i]:
+                        equip = d["equip_df"]
+                        if len(equip) > 0 and "po_year" in equip.columns:
+                            yearly = equip.groupby("po_year").agg(
+                                total_usd=("amount_usd", "sum"),
+                                order_count=("amount_usd", "count"),
+                                equip_types=("equipment_type", lambda x: ", ".join(sorted(x.dropna().unique())[:3])),
+                            ).reset_index().sort_values("po_year")
+
+                            with st.expander(f"{d['manufacturer']} {d['factory_name']} — {len(yearly)} years"):
+                                for _, yr in yearly.iterrows():
+                                    amt = yr["total_usd"]
+                                    amt_str = f"${amt/1e6:,.0f}M" if amt and amt > 0 else "-"
+                                    types_str = yr["equip_types"] if yr["equip_types"] else ""
+                                    ramp_info = ""
+                                    # Check if any backplane ramp matches this year
+                                    for bp, ramp_str in d["ramp_by_bp"].items():
+                                        if str(int(yr["po_year"])) in str(ramp_str):
+                                            ramp_info = f" → MP {ramp_str}"
+                                    st.markdown(
+                                        f"**{int(yr['po_year'])}** &nbsp; {amt_str} &nbsp; "
+                                        f"({yr['order_count']} orders){ramp_info}  \n"
+                                        f"<span style='color:#86868B;font-size:0.8rem;'>{types_str}</span>",
+                                        unsafe_allow_html=True,
+                                    )
+
+                                if d["total_investment"] > 0:
+                                    st.markdown(
+                                        f"---\n**Cumulative:** ${d['total_investment']/1e6:,.0f}M"
+                                    )
+                        else:
+                            st.caption(f"{d['manufacturer']} {d['factory_name']}: No equipment order data")
+
+                # ── Utilization Comparison Chart ──
+                st.divider()
+                st.markdown("#### Utilization Comparison")
+
+                fig_util = go.Figure()
+                for i, d in enumerate(compare_data):
+                    util = d["util_df"]
+                    if len(util) == 0:
+                        continue
+                    # Aggregate across backplanes per date
+                    agg = util.groupby("date").agg(
+                        capacity=("capacity_ksheets", "sum"),
+                        input=("actual_input_ksheets", "sum"),
+                    ).reset_index()
+                    agg["util_pct"] = (agg["input"] / agg["capacity"] * 100).round(1)
+                    # Only show dates with actual production
+                    agg = agg[agg["input"] > 0]
+
+                    fig_util.add_trace(go.Scatter(
+                        x=agg["date"].tolist(),
+                        y=agg["util_pct"].tolist(),
+                        mode="lines+markers",
+                        name=f"{d['manufacturer']} {d['factory_name']}",
+                        line=dict(color=colors[i % len(colors)], width=2),
+                        marker=dict(size=5),
+                        hovertemplate=(
+                            f"{d['manufacturer']} {d['factory_name']}<br>"
+                            "%{x}<br>Utilization: %{y:.1f}%<extra></extra>"
+                        ),
+                    ))
+
+                apply_chart_theme(fig_util)
+                fig_util.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Utilization (%)",
+                    height=400,
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig_util, use_container_width=True)
+
+                # ── Capacity Comparison Chart ──
+                st.markdown("#### Capacity Comparison")
+
+                fig_cap = go.Figure()
+                for i, d in enumerate(compare_data):
+                    util = d["util_df"]
+                    if len(util) == 0:
+                        continue
+                    agg = util.groupby("date").agg(
+                        capacity=("capacity_ksheets", "sum"),
+                    ).reset_index()
+                    agg = agg[agg["capacity"] > 0]
+
+                    fig_cap.add_trace(go.Scatter(
+                        x=agg["date"].tolist(),
+                        y=agg["capacity"].tolist(),
+                        mode="lines",
+                        name=f"{d['manufacturer']} {d['factory_name']}",
+                        line=dict(color=colors[i % len(colors)], width=2),
+                        hovertemplate=(
+                            f"{d['manufacturer']} {d['factory_name']}<br>"
+                            "%{x}<br>Capacity: %{y:,.1f}K/mo<extra></extra>"
+                        ),
+                    ))
+
+                apply_chart_theme(fig_cap)
+                fig_cap.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Capacity (K sheets/mo)",
+                    height=350,
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig_cap, use_container_width=True)
+
+                # ── Summary Comparison Table ──
+                st.markdown("#### Summary Table")
+                summary_rows = []
+                for d in compare_data:
+                    summary_rows.append({
+                        "Factory": f"{d['manufacturer']} {d['factory_name']}",
+                        "Location": f"{d['location']}, {d['region']}",
+                        "Tech": d["technology"],
+                        "Gen": d["generation"],
+                        "Backplane": ", ".join(d["backplanes"]),
+                        "Capacity (K/mo)": f"{d['capacity']:,.1f}",
+                        "Utilization": f"{d['utilization']:.1f}%",
+                        "First Ramp": d["earliest_ramp"],
+                        "Depreciation": f"{d['dep_years']}yr",
+                        "Total Investment": f"${d['total_investment']/1e6:,.0f}M" if d["total_investment"] > 0 else "-",
+                        "Status": d["status"],
+                    })
+                st.dataframe(
+                    pd.DataFrame(summary_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
