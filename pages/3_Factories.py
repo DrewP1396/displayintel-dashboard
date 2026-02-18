@@ -1026,9 +1026,9 @@ else:
             elif suffix == "O":
                 event = "LTPO Upgrade"
             elif suffix == "F":
-                event = "Foldable Conversion"
+                event = "Form Factor Change"
             elif suffix == "OF":
-                event = "LTPO + Foldable Upgrade"
+                event = "LTPO + Form Factor Change"
             elif suffix.startswith("_"):
                 sub = suffix.replace("_", "").replace("F", "")
                 has_f = "F" in suffix
@@ -1090,8 +1090,7 @@ else:
                         chosen_group = grp
                         chosen_date = dk
                         break
-                # If all groups have 0 capacity, take the latest non-zero
-                # individual phase, or just the latest group
+                # If all groups have 0 capacity, take the latest group
                 if chosen_group is None:
                     chosen_group = date_groups[sorted_dates[-1]]
                     chosen_date = sorted_dates[-1]
@@ -1100,6 +1099,18 @@ else:
                 oled_cap = sum(p["oled_max_input"] for p in chosen_group)
                 octa_cap = sum(p["octa_ksheets"] for p in chosen_group)
 
+                # OLED MG equivalent: normalize to TFT sheet size
+                # If OLED > TFT for a phase, OLED uses smaller (half-cut) glass
+                oled_mg = 0.0
+                for p in chosen_group:
+                    tft = p["tft_max_input"]
+                    oled = p["oled_max_input"]
+                    if tft > 0 and oled > 0:
+                        ratio = max(1, round(oled / tft))
+                        oled_mg += oled / ratio
+                    elif oled > 0:
+                        oled_mg += oled  # No TFT reference, use raw
+
                 family_results.append({
                     "base": base_num,
                     "members": [p["phase_raw"] for p in members],
@@ -1107,16 +1118,36 @@ else:
                     "latest_date": chosen_date,
                     "tft_capacity": cap,
                     "oled_capacity": oled_cap,
+                    "oled_mg_equiv": oled_mg,
                     "octa_capacity": octa_cap,
                 })
 
             # Aggregate across families
             total_tft = sum(f["tft_capacity"] for f in family_results)
             total_oled = sum(f["oled_capacity"] for f in family_results)
+            total_oled_mg = sum(f["oled_mg_equiv"] for f in family_results)
             total_octa = sum(f["octa_capacity"] for f in family_results)
 
             # Old (incorrect) sum for comparison
             old_sum = sum(p["tft_max_input"] for p in phases)
+
+            # Effective capacity = min of process stages (in MG-equivalent)
+            process_stages = {}
+            if total_tft > 0:
+                process_stages["TFT"] = total_tft
+            if total_oled_mg > 0:
+                process_stages["OLED"] = total_oled_mg
+            if total_octa > 0:
+                process_stages["OCT"] = total_octa
+            if process_stages:
+                bottleneck_stage = min(process_stages, key=process_stages.get)
+                effective_cap = process_stages[bottleneck_stage]
+                has_bottleneck = (len(process_stages) > 1 and
+                                  effective_cap < max(process_stages.values()) * 0.9)
+            else:
+                bottleneck_stage = None
+                effective_cap = total_tft
+                has_bottleneck = False
 
             # Technology split by backplane (from latest config per family)
             tech_split = defaultdict(float)
@@ -1124,38 +1155,41 @@ else:
                 for p in f["latest_group"]:
                     tech_split[p["backplane"]] += p["tft_max_input"]
 
-            # Product capability breakdown (from latest config per family)
-            rigid_cap = 0.0
-            hybrid_cap = 0.0
+            # Form factor breakdown (from latest config per family)
+            standard_rigid_cap = 0.0
+            thin_profile_cap = 0.0
             foldable_cap = 0.0
-            glass_sub = 0.0
-            pi_sub = 0.0
             for f in family_results:
                 for p in f["latest_group"]:
                     c = p["tft_max_input"]
                     sub = str(p.get("substrate") or "").strip()
                     enc = str(p.get("encapsulation") or "").strip()
-                    if sub in ("Rigid",) and enc != "TFE":
-                        rigid_cap += c
-                        glass_sub += c
-                    elif sub in ("Hybrid",) or (sub == "Rigid" and enc == "TFE"):
-                        hybrid_cap += c
-                        glass_sub += c
-                    elif sub in ("Flexible", "Foldable"):
+                    if sub == "Rigid" and enc != "TFE":
+                        standard_rigid_cap += c
+                    elif sub == "Rigid" and enc == "TFE":
+                        thin_profile_cap += c
+                    elif sub in ("Flexible", "Foldable", "Hybrid", "Rigid/Flexible"):
                         foldable_cap += c
-                        pi_sub += c
                     else:
-                        # Unknown substrate
-                        rigid_cap += c
+                        standard_rigid_cap += c  # Unknown → default
+
+            glass_sub = standard_rigid_cap + thin_profile_cap
+            pi_sub = foldable_cap
+
+            # Application breakdown (from latest config per family)
+            app_split = defaultdict(float)
+            for f in family_results:
+                for p in f["latest_group"]:
+                    app = str(p.get("main_application") or "-").strip()
+                    if not app or app == "-":
+                        app = str(p.get("application") or "Unknown").strip()
+                    app_split[app] += p["tft_max_input"]
 
             # 100% LTPO conversion check
             bases_with_o = set()
-            all_bases = set()
             for p in phases:
-                parsed = p["parsed"]
-                all_bases.add(parsed["base"])
-                if parsed["suffix"] == "O" or "O" in parsed["suffix"]:
-                    bases_with_o.add(parsed["base"])
+                if "O" in p["parsed"]["suffix"]:
+                    bases_with_o.add(p["parsed"]["base"])
             base_only = {p["parsed"]["base"] for p in phases if p["parsed"]["suffix"] == ""}
             all_converted = (len(base_only) > 0 and
                              all(b in bases_with_o for b in base_only))
@@ -1164,15 +1198,21 @@ else:
                 "families": family_results,
                 "total_tft": total_tft,
                 "total_oled": total_oled,
+                "total_oled_mg": total_oled_mg,
                 "total_octa": total_octa,
                 "old_sum": old_sum,
+                "effective_cap": effective_cap,
+                "bottleneck_stage": bottleneck_stage,
+                "has_bottleneck": has_bottleneck,
+                "process_stages": dict(process_stages),
                 "tech_split": dict(tech_split),
                 "all_converted": all_converted,
-                "rigid_cap": rigid_cap,
-                "hybrid_cap": hybrid_cap,
+                "standard_rigid_cap": standard_rigid_cap,
+                "thin_profile_cap": thin_profile_cap,
                 "foldable_cap": foldable_cap,
                 "glass_sub": glass_sub,
                 "pi_sub": pi_sub,
+                "app_split": dict(app_split),
             }
 
         # ── Load ScenarioByFab from Excel (cached) ──
@@ -1404,6 +1444,14 @@ else:
 
                 dep_years = _DEP_YEARS.get(region, 5)
 
+                # Depreciation year range
+                dep_start_yr = earliest_ramp_dt.year if earliest_ramp_dt else None
+                latest_ramp_dts = [p["mp_dt"] for p in phases if p["mp_dt"] is not None]
+                latest_ramp_dt = max(latest_ramp_dts) if latest_ramp_dts else None
+                dep_end_yr = (latest_ramp_dt.year + dep_years) if latest_ramp_dt else None
+                dep_range = (f"{dep_start_yr}-{dep_end_yr}"
+                             if dep_start_yr and dep_end_yr else "-")
+
                 compare_data.append({
                     "label": label, "factory_name": fname, "manufacturer": mfr,
                     "location": location, "region": region,
@@ -1416,6 +1464,7 @@ else:
                     "total_investment": total_investment,
                     "earliest_ramp": earliest_ramp,
                     "dep_years": dep_years,
+                    "dep_range": dep_range,
                     "phases": phases,
                     # Corrected capacity fields (phase-family logic)
                     "families": cap_data["families"],
@@ -1423,13 +1472,19 @@ else:
                     "all_converted": cap_data["all_converted"],
                     "total_tft": cap_data["total_tft"],
                     "total_oled": cap_data["total_oled"],
+                    "total_oled_mg": cap_data["total_oled_mg"],
                     "total_octa": cap_data["total_octa"],
                     "old_sum": cap_data["old_sum"],
-                    "rigid_cap": cap_data["rigid_cap"],
-                    "hybrid_cap": cap_data["hybrid_cap"],
+                    "effective_cap": cap_data["effective_cap"],
+                    "bottleneck_stage": cap_data["bottleneck_stage"],
+                    "has_bottleneck": cap_data["has_bottleneck"],
+                    "process_stages": cap_data["process_stages"],
+                    "standard_rigid_cap": cap_data["standard_rigid_cap"],
+                    "thin_profile_cap": cap_data["thin_profile_cap"],
                     "foldable_cap": cap_data["foldable_cap"],
                     "glass_sub": cap_data["glass_sub"],
                     "pi_sub": cap_data["pi_sub"],
+                    "app_split": cap_data["app_split"],
                     "process_available": process_available,
                     "util_df": util, "equip_df": equip,
                     "factory_df": fdf,
@@ -1448,14 +1503,9 @@ else:
                     with card_cols[i]:
                         tech = d["technology"]
 
-                        # Dep schedule summary (earliest + latest end)
-                        dep_ends = [p["dep_end"] for p in d["phases"] if p["dep_end"] != "-"]
-                        dep_summary = f"{dep_ends[0]} -- {dep_ends[-1]}" if len(dep_ends) > 1 else (dep_ends[0] if dep_ends else "-")
-
                         # Header
                         st.subheader(f"{d['manufacturer']} {d['factory_name']} | {tech}")
-                        st.caption(f"{d['location']}, {d['region']}  |  First MP: {d['earliest_ramp']}")
-                        st.caption(f"Depreciation ({d['dep_years']}yr): {dep_summary}")
+                        st.caption(f"{d['location']}, {d['region']}  |  First MP: {d['earliest_ramp']}  |  Depreciation: {d['dep_range']}")
 
                         # Corrected capacity (phase-family logic)
                         corrected_cap = d["total_tft"]
@@ -1465,30 +1515,36 @@ else:
                         with m2:
                             st.metric("Utilization", f"{d['utilization']:.1f}%")
 
-                        # Tech split by backplane
+                        # Technology Mix
                         ts_parts = []
                         total_ts = sum(d["tech_split"].values())
                         for bp, cap in sorted(d["tech_split"].items(), key=lambda x: -x[1]):
                             if cap > 0:
                                 pct = (cap / total_ts * 100) if total_ts > 0 else 0
-                                ts_parts.append(f"{bp} {cap:,.0f}K ({pct:.0f}%)")
-                        ts_str = " / ".join(ts_parts) if ts_parts else "-"
+                                ts_parts.append(f"{bp}: {cap:,.0f}K ({pct:.0f}%)")
                         if d["all_converted"]:
-                            ts_str += " (100% LTPO converted)"
-                        st.caption(f"Backplane: {ts_str}")
+                            ts_parts.append("100% LTPO converted")
+                        if ts_parts:
+                            st.markdown(f"**Technology:** {' / '.join(ts_parts)}")
 
-                        # Product capability one-liner
-                        prod_parts = []
-                        if d["rigid_cap"] > 0:
-                            prod_parts.append(f"Rigid {d['rigid_cap']:,.0f}K")
-                        if d["hybrid_cap"] > 0:
-                            prod_parts.append(f"Hybrid {d['hybrid_cap']:,.0f}K")
+                        # Form Factor one-liner
+                        ff_parts = []
+                        if d["standard_rigid_cap"] > 0:
+                            ff_parts.append(f"Standard Rigid: {d['standard_rigid_cap']:,.0f}K")
+                        if d["thin_profile_cap"] > 0:
+                            ff_parts.append(f"Thin Profile: {d['thin_profile_cap']:,.0f}K")
                         if d["foldable_cap"] > 0:
-                            prod_parts.append(f"Foldable {d['foldable_cap']:,.0f}K")
-                        if prod_parts:
-                            st.caption(f"Product: {' / '.join(prod_parts)}")
+                            ff_parts.append(f"Foldable: {d['foldable_cap']:,.0f}K")
+                        if ff_parts:
+                            st.markdown(f"**Form Factor:** {' / '.join(ff_parts)}")
 
-                        st.caption(f"Families: {len(d['families'])} phase families")
+                        # Effective capacity with bottleneck
+                        if d["has_bottleneck"]:
+                            st.caption(
+                                f"Effective Capacity: {d['effective_cap']:,.0f}K "
+                                f"(limited by {d['bottleneck_stage']})"
+                            )
+
                         st.divider()
 
                 # ════════════════════════════════════════════
@@ -1503,60 +1559,66 @@ else:
                         total = d["total_tft"]
                         with st.expander(f"{d['manufacturer']} {d['factory_name']} — {total:,.0f}K MG/mo", expanded=False):
                             # By Technology (backplane)
-                            st.markdown("**By Backplane Technology**")
+                            st.markdown("**Technology Mix**")
                             for bp, cap in sorted(d["tech_split"].items(), key=lambda x: -x[1]):
                                 if cap > 0:
                                     pct = (cap / total * 100) if total > 0 else 0
-                                    st.markdown(f"- {bp}: **{cap:,.0f}K** MG/mo ({pct:.0f}%)")
+                                    st.markdown(f"- {bp}: **{cap:,.0f}K** ({pct:.0f}%)")
                             if d["all_converted"]:
                                 st.caption("100% LTPO (converted from LTPS)")
 
-                            # By Product Capability
-                            st.markdown("**By Product Capability**")
-                            if d["rigid_cap"] > 0:
-                                st.markdown(f"- Rigid: **{d['rigid_cap']:,.0f}K** MG/mo")
-                            if d["hybrid_cap"] > 0:
-                                st.markdown(f"- Hybrid (Rigid + TFE): **{d['hybrid_cap']:,.0f}K** MG/mo")
+                            # Form Factor
+                            st.markdown("**Form Factor**")
+                            if d["standard_rigid_cap"] > 0:
+                                pct = (d["standard_rigid_cap"] / total * 100) if total > 0 else 0
+                                st.markdown(f"- Standard Rigid: **{d['standard_rigid_cap']:,.0f}K** (glass + glass seal) ({pct:.0f}%)")
+                            if d["thin_profile_cap"] > 0:
+                                pct = (d["thin_profile_cap"] / total * 100) if total > 0 else 0
+                                st.markdown(f"- Thin Profile: **{d['thin_profile_cap']:,.0f}K** (glass + TFE) ({pct:.0f}%)")
                             if d["foldable_cap"] > 0:
-                                st.markdown(f"- Foldable (PI + TFE): **{d['foldable_cap']:,.0f}K** MG/mo")
-                            if d["rigid_cap"] == 0 and d["hybrid_cap"] == 0 and d["foldable_cap"] == 0:
-                                st.caption("Product capability: N/A")
+                                pct = (d["foldable_cap"] / total * 100) if total > 0 else 0
+                                st.markdown(f"- Foldable: **{d['foldable_cap']:,.0f}K** (PI + TFE) ({pct:.0f}%)")
+                            if d["standard_rigid_cap"] == 0 and d["thin_profile_cap"] == 0 and d["foldable_cap"] == 0:
+                                st.caption("Form factor: N/A")
 
-                            # By Substrate
-                            st.markdown("**By Substrate**")
-                            if d["glass_sub"] > 0:
-                                st.markdown(f"- Glass-based: **{d['glass_sub']:,.0f}K** MG/mo")
-                            if d["pi_sub"] > 0:
-                                st.markdown(f"- PI-based (Foldable-capable): **{d['pi_sub']:,.0f}K** MG/mo")
-
-                            # Process Capacity (TFT/OLED/OCTA)
+                            # Process Capacity (TFT/OLED/OCT)
                             st.markdown("**Process Capacity**")
                             if d["process_available"] and (d["total_tft"] > 0 or d["total_oled"] > 0):
                                 tft = d["total_tft"]
-                                oled = d["total_oled"]
+                                oled_mg = d["total_oled_mg"]
+                                oled_raw = d["total_oled"]
                                 octa = d["total_octa"]
-                                st.markdown(f"- TFT Input: **{tft:,.0f}K** MG/mo")
-                                st.markdown(f"- OLED Output: **{oled:,.0f}K** MG/mo")
+                                st.markdown(f"- TFT/Backplane Input: **{tft:,.0f}K** MG/mo")
+                                if oled_mg != oled_raw and oled_raw > 0:
+                                    st.markdown(f"- OLED Encapsulation: **{oled_mg:,.0f}K** MG/mo ({oled_raw:,.0f}K raw)")
+                                elif oled_mg > 0:
+                                    st.markdown(f"- OLED Encapsulation: **{oled_mg:,.0f}K** MG/mo")
                                 if octa > 0:
-                                    st.markdown(f"- OCTA: **{octa:,.0f}K** MG/mo")
+                                    st.markdown(f"- On-Cell Touch (OCT): **{octa:,.0f}K** MG/mo")
                                 else:
-                                    st.markdown("- OCTA: N/A")
+                                    st.markdown("- On-Cell Touch (OCT): N/A")
 
-                                # Bottleneck detection (OLED half-cut → divide by 2)
-                                oled_equiv = oled / 2 if oled > 0 else float("inf")
-                                steps = {"TFT Input": tft}
-                                if octa > 0:
-                                    steps["OCTA"] = octa
-                                steps["OLED (TFT-equiv)"] = oled_equiv
-                                valid = {k: v for k, v in steps.items() if 0 < v < float("inf")}
-                                if len(valid) > 1:
-                                    bottleneck = min(valid, key=valid.get)
-                                    bn_val = valid[bottleneck]
-                                    max_val = max(valid.values())
-                                    if bn_val < max_val * 0.95:
-                                        st.markdown(f"Bottleneck: **{bottleneck}**")
+                                # Effective capacity and bottleneck
+                                eff = d["effective_cap"]
+                                if d["has_bottleneck"]:
+                                    st.markdown(
+                                        f"- **Effective Capacity: {eff:,.0f}K** "
+                                        f"(limited by {d['bottleneck_stage']})"
+                                    )
+                                elif eff > 0:
+                                    st.markdown(f"- Effective Capacity: **{eff:,.0f}K** MG/mo")
                             else:
                                 st.caption("Process capacity: N/A")
+
+                            # Application Mix
+                            st.markdown("**Application Mix**")
+                            if d["app_split"]:
+                                for app, cap in sorted(d["app_split"].items(), key=lambda x: -x[1]):
+                                    if cap > 0:
+                                        pct = (cap / total * 100) if total > 0 else 0
+                                        st.markdown(f"- {app}: **{cap:,.0f}K** ({pct:.0f}%)")
+                            else:
+                                st.caption("Application data: N/A")
 
                             # Phase family summary
                             st.markdown("**Phase Families**")
@@ -1565,9 +1627,16 @@ else:
                                 latest_phases = fam["latest_group"]
                                 latest_bp = ", ".join(sorted(set(p["backplane"] for p in latest_phases)))
                                 latest_sub = ", ".join(sorted(set(str(p.get("substrate", "-")) for p in latest_phases)))
+                                latest_enc = ", ".join(sorted(set(str(p.get("encapsulation", "-")) for p in latest_phases)))
+                                # Form factor label
+                                ff = "Standard Rigid"
+                                if latest_enc == "TFE" and latest_sub in ("Flexible", "Foldable", "Hybrid"):
+                                    ff = "Foldable"
+                                elif latest_enc == "TFE" and latest_sub == "Rigid":
+                                    ff = "Thin Profile"
                                 st.markdown(
                                     f"- Family {fam['base']} [{members_str}] → "
-                                    f"**{fam['tft_capacity']:,.0f}K** ({latest_bp}, {latest_sub})"
+                                    f"**{fam['tft_capacity']:,.0f}K** ({latest_bp}, {ff})"
                                 )
 
                 # ════════════════════════════════════════════
@@ -1598,30 +1667,55 @@ else:
 
                                 st.markdown(f"**Phase {base} Family** (current: {fam['tft_capacity']:,.0f}K MG/mo)")
 
+                                prev_bp = None
+                                prev_sub = None
+                                prev_enc = None
                                 for p in members_sorted:
                                     phase_label = p["phase_raw"]
                                     bp = p["backplane"]
                                     sub = str(p.get("substrate") or "-")
                                     enc = str(p.get("encapsulation") or "-")
                                     tft_cap = p["tft_max_input"]
+                                    oled_cap = p["oled_max_input"]
+                                    octa_cap = p["octa_ksheets"]
                                     suffix = p["parsed"]["suffix"]
+
+                                    # Form factor label
+                                    if sub == "Rigid" and enc != "TFE":
+                                        ff = "Standard Rigid"
+                                    elif sub == "Rigid" and enc == "TFE":
+                                        ff = "Thin Profile"
+                                    elif sub in ("Flexible", "Foldable", "Hybrid", "Rigid/Flexible"):
+                                        ff = "Foldable"
+                                    else:
+                                        ff = "Standard Rigid"
 
                                     # Event classification
                                     if suffix == "":
                                         tag = "NEW CAPACITY"
-                                        cap_note = f"+{tft_cap:,.0f}K MG/mo (new capacity added)"
+                                        cap_note = f"+{tft_cap:,.0f}K MG/mo"
                                     elif "O" in suffix and "F" not in suffix:
                                         tag = "TECHNOLOGY UPGRADE"
-                                        cap_note = f"{tft_cap:,.0f}K MG/mo (no net change)"
+                                        bp_change = f" ({prev_bp} → {bp})" if prev_bp and prev_bp != bp else ""
+                                        cap_note = f"{tft_cap:,.0f}K MG/mo (no net change{bp_change})"
                                     elif "F" in suffix and "O" not in suffix:
-                                        tag = "SUBSTRATE CONVERSION"
-                                        cap_note = f"{tft_cap:,.0f}K MG/mo (no net change)"
+                                        tag = "FORM FACTOR CHANGE"
+                                        ff_note = f" → {ff}" if prev_sub and prev_sub != sub else ""
+                                        cap_note = f"{tft_cap:,.0f}K MG/mo (no net change{ff_note})"
                                     elif "O" in suffix and "F" in suffix:
-                                        tag = "TECHNOLOGY + SUBSTRATE UPGRADE"
+                                        tag = "TECHNOLOGY + FORM FACTOR CHANGE"
                                         cap_note = f"{tft_cap:,.0f}K MG/mo (no net change)"
                                     else:
                                         tag = "PHASE UPDATE"
                                         cap_note = f"{tft_cap:,.0f}K MG/mo"
+
+                                    # Process capacity line
+                                    proc_parts = [f"TFT: {tft_cap:,.0f}K"]
+                                    if oled_cap > 0:
+                                        proc_parts.append(f"OLED: {oled_cap:,.0f}K")
+                                    if octa_cap > 0:
+                                        proc_parts.append(f"OCT: {octa_cap:,.0f}K")
+                                    proc_str = ", ".join(proc_parts)
 
                                     # Investment placeholder
                                     inv_key = (d["manufacturer"], d["factory_name"], phase_label)
@@ -1630,19 +1724,29 @@ else:
 
                                     st.markdown(
                                         f"**{p['mp_ramp']}**: Phase {phase_label} — {tag}  \n"
-                                        f"Technology: {bp} | Substrate: {sub} | Encap: {enc}  \n"
-                                        f"Capacity: {cap_note}  \n"
-                                        f"Investment: {inv_str} | Eqpt PO: {p['eqpt_po']} | Install: {p['install']}  \n"
-                                        f"Dep. End: {p['dep_end']}"
+                                        f"Backplane: {bp} | Form Factor: {ff}  \n"
+                                        f"Substrate: {sub} | Encap: {enc}  \n"
+                                        f"Capacity: {cap_note} ({proc_str})  \n"
+                                        f"Investment: {inv_str} | Eqpt PO: {p['eqpt_po']} | Install: {p['install']}"
                                     )
+
+                                    prev_bp = bp
+                                    prev_sub = sub
+                                    prev_enc = enc
 
                                 # Current configuration (latest group)
                                 latest = fam["latest_group"]
                                 latest_bp = ", ".join(sorted(set(p["backplane"] for p in latest)))
                                 latest_sub = ", ".join(sorted(set(str(p.get("substrate", "-")) for p in latest)))
-                                latest_enc = ", ".join(sorted(set(str(p.get("encapsulation", "-")) for p in latest)))
+                                # Form factor for current config
+                                latest_enc_val = ", ".join(sorted(set(str(p.get("encapsulation", "-")) for p in latest)))
+                                curr_ff = "Standard Rigid"
+                                if latest_enc_val == "TFE" and any(str(p.get("substrate", "")) in ("Flexible", "Foldable", "Hybrid") for p in latest):
+                                    curr_ff = "Foldable"
+                                elif latest_enc_val == "TFE" and all(str(p.get("substrate", "")) == "Rigid" for p in latest):
+                                    curr_ff = "Thin Profile"
                                 st.caption(
-                                    f"Current: {latest_bp} | {latest_sub} | {latest_enc} | "
+                                    f"Current: {latest_bp} | {curr_ff} | "
                                     f"{fam['tft_capacity']:,.0f}K MG/mo"
                                 )
 
@@ -1650,9 +1754,12 @@ else:
                                 st.markdown("---")
 
                             # Cumulative totals
+                            eff_note = ""
+                            if d["has_bottleneck"]:
+                                eff_note = f" | Effective: {d['effective_cap']:,.0f}K (limited by {d['bottleneck_stage']})"
                             st.markdown(
-                                f"**Factory Total: {cumulative_cap:,.0f}K MG/mo** "
-                                f"({num_fam} families, {len(d['phases'])} phase rows)  \n"
+                                f"**Factory Total: {cumulative_cap:,.0f}K MG/mo{eff_note}**  \n"
+                                f"{num_fam} families, {len(d['phases'])} phase rows  \n"
                                 f"Investment: "
                                 f"**{'${:,.0f}M'.format(d['total_investment']/1e6) if d['total_investment'] > 0 else 'TBD'}**"
                             )
@@ -1762,21 +1869,20 @@ else:
                 summary_rows = []
                 for d in compare_data:
                     bp_list = sorted(set(p["backplane"] for p in d["phases"] if p["backplane"] != "-"))
-                    dep_ends = [p["dep_end"] for p in d["phases"] if p["dep_end"] != "-"]
                     summary_rows.append({
                         "Factory": f"{d['manufacturer']} {d['factory_name']}",
                         "Location": f"{d['location']}, {d['region']}",
                         "Gen": d["tft_gen"],
-                        "Backplane": ", ".join(bp_list),
                         "Families": len(d["families"]),
-                        "Capacity (K/mo)": f"{d['total_tft']:,.0f}",
+                        "TFT Cap (K)": f"{d['total_tft']:,.0f}",
+                        "Effective (K)": f"{d['effective_cap']:,.0f}" if d["effective_cap"] > 0 else "-",
                         "LTPS": f"{d['tech_split'].get('LTPS', 0):,.0f}",
                         "LTPO": f"{d['tech_split'].get('LTPO', 0):,.0f}",
-                        "Rigid": f"{d['rigid_cap']:,.0f}",
+                        "Std Rigid": f"{d['standard_rigid_cap']:,.0f}",
+                        "Thin Prof": f"{d['thin_profile_cap']:,.0f}",
                         "Foldable": f"{d['foldable_cap']:,.0f}",
                         "Utilization": f"{d['utilization']:.1f}%",
-                        "First Ramp": d["earliest_ramp"],
-                        "Status": d["status"],
+                        "Depreciation": d["dep_range"],
                     })
                 st.dataframe(
                     pd.DataFrame(summary_rows),
