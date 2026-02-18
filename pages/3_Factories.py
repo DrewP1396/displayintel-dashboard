@@ -1322,11 +1322,11 @@ else:
                 for i, d in enumerate(compare_data):
                     with card_cols[i]:
                         tech = d["technology"]
-                        tc = "#007AFF" if tech == "OLED" else "#34C759"
+                        tech_badge = f"**{tech}**" if tech == "OLED" else f"**{tech}**"
 
                         # Dep schedule summary (earliest + latest end)
                         dep_ends = [p["dep_end"] for p in d["phases"] if p["dep_end"] != "-"]
-                        dep_summary = f"{dep_ends[0]} – {dep_ends[-1]}" if len(dep_ends) > 1 else (dep_ends[0] if dep_ends else "-")
+                        dep_summary = f"{dep_ends[0]} -- {dep_ends[-1]}" if len(dep_ends) > 1 else (dep_ends[0] if dep_ends else "-")
 
                         # Tech split text
                         ts_parts = []
@@ -1335,42 +1335,24 @@ else:
                                 ts_parts.append(f"{bp} {cap:,.0f}K")
                         tech_split_str = " / ".join(ts_parts) if ts_parts else "-"
                         if d["all_converted"] and "LTPO" in d["tech_split"]:
-                            tech_split_str += " <span style='color:#007AFF;font-size:0.72rem;'>(100% LTPO converted)</span>"
+                            tech_split_str += " (100% LTPO converted)"
 
-                        st.markdown(f"""
-                        <div style="background:#fff;border:1px solid #E5E5EA;border-radius:14px;
-                                    padding:18px 20px 14px;margin-bottom:6px;
-                                    box-shadow:0 1px 3px rgba(0,0,0,0.06);">
-                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
-                                <span style="font-size:1.15rem;font-weight:700;">{d['manufacturer']} {d['factory_name']}</span>
-                                <span style="background:{tc};color:#fff;padding:1px 7px;border-radius:4px;
-                                             font-size:0.7rem;font-weight:600;">{tech}</span>
-                            </div>
-                            <div style="color:#86868B;font-size:0.82rem;margin-bottom:12px;">
-                                {d['location']}, {d['region']} &nbsp;|&nbsp;
-                                First MP: <b>{d['earliest_ramp']}</b>
-                            </div>
-                            <div style="color:#86868B;font-size:0.78rem;margin-bottom:10px;">
-                                Depreciation ({d['dep_years']}yr): <b>{dep_summary}</b>
-                            </div>
+                        # Header
+                        st.subheader(f"{d['manufacturer']} {d['factory_name']} | {tech}")
+                        st.caption(f"{d['location']}, {d['region']}  |  First MP: {d['earliest_ramp']}")
+                        st.caption(f"Depreciation ({d['dep_years']}yr): {dep_summary}")
 
-                            <div style="border-top:1px solid #F0F0F0;padding-top:10px;margin-bottom:8px;">
-                                <div style="font-size:0.78rem;color:#86868B;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Capacity Summary</div>
-                                <div style="font-size:1.3rem;font-weight:700;color:#1D1D1F;">
-                                    {d['capacity']:,.1f} <span style="font-size:0.85rem;font-weight:400;color:#86868B;">K/mo</span>
-                                </div>
-                                <div style="font-size:0.82rem;color:#555;margin-top:2px;">
-                                    Utilization: <b>{d['utilization']:.1f}%</b>
-                                    &nbsp;|&nbsp; Input: <b>{d['input']:,.1f}</b> K/mo
-                                </div>
-                            </div>
+                        # Capacity metrics
+                        m1, m2 = st.columns(2)
+                        with m1:
+                            st.metric("Total Capacity", f"{d['capacity']:,.1f} K/mo")
+                        with m2:
+                            st.metric("Utilization", f"{d['utilization']:.1f}%")
+                        st.metric("Actual Input", f"{d['input']:,.1f} K/mo")
 
-                            <div style="border-top:1px solid #F0F0F0;padding-top:8px;">
-                                <div style="font-size:0.78rem;color:#86868B;margin-bottom:3px;">Technology Split</div>
-                                <div style="font-size:0.85rem;">{tech_split_str}</div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Tech split
+                        st.caption(f"Tech Split: {tech_split_str}")
+                        st.divider()
 
                 # ════════════════════════════════════════════
                 # EXPANDABLE: Capacity Breakdown (per factory)
@@ -1594,20 +1576,13 @@ else:
                 st.plotly_chart(fig_util, use_container_width=True)
 
                 # Avg utilization metrics
-                st.markdown("**Average Utilization**")
                 avg_cols = st.columns(n)
                 for i, (name, avg_u) in enumerate(avg_utils):
                     with avg_cols[i]:
                         if avg_u > 0:
-                            u_color = "#34C759" if avg_u >= 80 else ("#FF9500" if avg_u >= 60 else "#FF3B30")
-                            st.markdown(
-                                f"<div style='text-align:center;'>"
-                                f"<div style='font-size:1.6rem;font-weight:700;color:{u_color};'>{avg_u:.1f}%</div>"
-                                f"<div style='font-size:0.8rem;color:#86868B;'>{name}</div></div>",
-                                unsafe_allow_html=True,
-                            )
+                            st.metric(f"Avg Util — {name}", f"{avg_u:.1f}%")
                         else:
-                            st.caption(f"{name}: No data")
+                            st.metric(f"Avg Util — {name}", "No data")
 
                 # ════════════════════════════════════════════
                 # SUMMARY TABLE
